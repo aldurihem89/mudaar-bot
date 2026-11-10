@@ -42,12 +42,12 @@ pre{background:var(--tint);border-radius:12px;padding:10px;white-space:pre-wrap;
 .days{display:flex;gap:6px;flex-wrap:wrap}.days label{display:flex;align-items:center;gap:4px;background:var(--tint);border-radius:9px;padding:6px 8px;margin:0;font-size:13px}.days input{width:auto;accent-color:var(--indigo)}
 .chk{display:flex;align-items:center;gap:8px;margin-top:10px}.chk input{width:auto;accent-color:var(--indigo)}
 .login{max-width:380px;margin:48px auto;padding:0 16px}.login .card{padding:28px 24px;text-align:center}.login .logo{display:flex;justify-content:center;margin:6px 0 14px}.login form{text-align:right}.login .btn{width:100%}
-.login .tag{font-size:15px;font-weight:700;margin:0 0 6px}.login .slogan{margin:0 0 6px;font-size:14px;color:var(--indigo);font-weight:600}.login .dots{display:flex;justify-content:center;gap:6px;margin:14px 0 0}.login .dots i{width:8px;height:8px;border-radius:50%;display:block}
+.login .tag{font-size:16px;font-weight:700;margin:0 0 4px}.login .tag.en{font:600 13px/1.3 'Outfit',sans-serif;letter-spacing:.04em;color:var(--muted);margin-bottom:8px}.login .slogan{margin:0 0 6px;font-size:14px;color:var(--indigo);font-weight:600}.login .dots{display:flex;justify-content:center;gap:6px;margin:14px 0 0}.login .dots i{width:8px;height:8px;border-radius:50%;display:block}
 `;
 
 export function LOGIN_HTML(message = '') {
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mudaar — دخول</title>${FONTS}<style>${CSS}</style></head>
-<body><div class="login"><div class="card"><div class="logo">${LOGO_V(170)}</div><p class="tag">مُدار - مساعد البيت<span class="muted" style="font-weight:600"> | <bdi dir="ltr">mudaar - Home Assistant</bdi></span></p><p class="slogan">بيتك، مُدار!<span class="muted" style="font-weight:600"> · </span><bdi dir="ltr" style="font-family:'Outfit',sans-serif">Your home, managed!</bdi></p>
+<body><div class="login"><div class="card"><div class="logo">${LOGO_V(170)}</div><p class="tag">مُدار - مساعد البيت</p><p class="tag en" dir="ltr">mudaar - Home Assistant</p><p class="slogan">بيتك، مُدار!<span class="muted" style="font-weight:600"> · </span><bdi dir="ltr" style="font-family:'Outfit',sans-serif">Your home, managed!</bdi></p>
 ${message ? `<p class="pill bad" style="display:block;padding:10px">${message}</p>` : ''}
 <form method="post" action="/admin/login"><label>اسم المستخدم</label><input type="text" name="username" autocapitalize="none" autocorrect="off" autocomplete="username" dir="ltr"><label>كلمة المرور</label><input type="password" name="password" autocomplete="current-password" dir="ltr"><div class="actions"><button class="btn" type="submit">دخول</button></div></form><div class="dots"><i style="background:var(--navy)"></i><i style="background:var(--mint)"></i><i style="background:var(--indigo)"></i></div></div></div></body></html>`;
 }
