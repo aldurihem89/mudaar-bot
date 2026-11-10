@@ -1197,7 +1197,7 @@ export class Ledger {
       }
       case 'people':
         if (method === 'GET') return json(this.q(`SELECT id, name, role, phone, lang, gets_summary, active, last_inbound_at, welcome_pending, welcomed_at FROM people WHERE active = 1 ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'family' THEN 1 WHEN 'maid' THEN 2 ELSE 3 END, id`));
-        if (method === 'POST') {
+        if (method === 'POST' && !id) {
           const phone = normalizePhone(body.phone);
           if (!body.name || !phone || phone.length < 9 || !['owner', 'family', 'maid', 'driver'].includes(body.role)) {
             this.log('warn', 'people add rejected', { got: Object.keys(body), name: body.name || '', phone_len: phone.length, role: body.role || '' });
