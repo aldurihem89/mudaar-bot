@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "homeworker",
+  "name": "mudaar-bot",
   "main": "src/worker.js",
   "compatibility_date": "2025-06-01",
   "keep_vars": true,
