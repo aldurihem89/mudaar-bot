@@ -1464,7 +1464,7 @@ export class Ledger {
             out.templates = TEMPLATE_NAMES.map((n) => {
               const found = t.filter((x) => x.name === n);
               const ar = found.find((x) => x.language === 'ar') || found[0];
-              return { name: n, status: ar ? ar.status : 'MISSING', reason: ar?.rejected_reason || null };
+              return { name: n, status: ar ? ar.status : 'MISSING', category: ar?.category || null, reason: ar?.rejected_reason || null };
             });
           } catch (e) { out.templates_error = e.graph?.message || e.message; }
           return json(out);
