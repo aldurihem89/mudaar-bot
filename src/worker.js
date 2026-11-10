@@ -58,6 +58,14 @@ export default {
     const isPublicHost = publicHosts.includes(url.hostname);
     const appOrigin = env.APP_HOST ? `https://${env.APP_HOST}` : url.origin;
 
+    // Public interest form (no auth): stored by the Ledger, owner notified on WhatsApp
+    if (path === '/api/interest' && request.method === 'POST') {
+      const raw = await request.text();
+      const ip = request.headers.get('cf-connecting-ip') || '';
+      const r = await stub(env).fetch('https://ledger.internal/interest' + url.search, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-ip': ip }, body: raw });
+      return new Response(await r.text(), { status: r.status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
+    }
+
     if (path === '/' || path === '') {
       if (isPublicHost && env.ASSETS) return env.ASSETS.fetch(request);
       return Response.redirect(url.origin + '/admin', 302);

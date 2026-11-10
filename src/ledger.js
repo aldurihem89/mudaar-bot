@@ -81,6 +81,9 @@ export class Ledger {
     for (const col of ['welcome_pending INTEGER DEFAULT 0', 'welcomed_at TEXT']) {
       try { this.sql.exec(`ALTER TABLE people ADD COLUMN ${col}`); } catch (e) { /* already there */ }
     }
+    for (const col of ["source TEXT DEFAULT 'whatsapp'", 'city TEXT', 'email TEXT', 'staff TEXT', 'note TEXT', 'ip TEXT']) {
+      try { this.sql.exec(`ALTER TABLE leads ADD COLUMN ${col}`); } catch (e) { /* already there */ }
+    }
     for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
       this.sql.exec(`INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)`, k, v);
     }
@@ -239,6 +242,7 @@ export class Ledger {
         await this.handleWebhook(body);
         return json({ ok: true });
       }
+      if (path === '/interest' && request.method === 'POST') return this.webInterest(request, url);
       if (path === '/cron') {
         await this.cron();
         return json({ ok: true });
@@ -275,6 +279,34 @@ export class Ledger {
         }
       }
     }
+  }
+
+  // ---------- website interest form ----------
+  async webInterest(request, url) {
+    let d = await request.json().catch(() => null);
+    if (!d || !Object.keys(d).length) { try { d = JSON.parse(url.searchParams.get('_b') || '{}'); } catch (e) { d = {}; } }
+    const ip = request.headers.get('x-ip') || '';
+    const clean = (v, n = 200) => String(v || '').trim().slice(0, n);
+    const name = clean(d.name, 80), city = clean(d.city, 60), email = clean(d.email, 120), note = clean(d.note, 500), interest = clean(d.interest, 60);
+    const phone = normalizePhone(d.phone || '');
+    if (d.website) return json({ ok: true }); // honeypot: pretend success
+    if (!name) return json({ error: 'الاسم مطلوب' }, 400);
+    if (!phone && !email) return json({ error: 'اكتب رقم الجوال أو البريد الإلكتروني' }, 400);
+    if (d.t && Date.now() - Number(d.t) < 2500) return json({ ok: true }); // filled faster than a human
+    const recent = this.q1(`SELECT COUNT(*) AS n FROM leads WHERE ip = ? AND first_at > ?`, ip, new Date(Date.now() - 3600000).toISOString()).n;
+    if (ip && recent >= 5) return json({ error: 'حاول لاحقاً' }, 429);
+    const staff = `عاملات ${clean(d.maids, 4)} · سائقون ${clean(d.drivers, 4)}`;
+    const now = T.isoNow();
+    const key = phone || `email:${email.toLowerCase()}`;
+    this.run(`INSERT INTO leads(phone, name, first_text, last_text, messages, interest, first_at, last_at, source, city, email, staff, note, ip)
+              VALUES (?, ?, ?, ?, 1, ?, ?, ?, 'web', ?, ?, ?, ?, ?)
+              ON CONFLICT(phone) DO UPDATE SET name = excluded.name, last_text = excluded.last_text, messages = messages + 1, interest = excluded.interest,
+                last_at = excluded.last_at, city = excluded.city, email = excluded.email, staff = excluded.staff, note = excluded.note`,
+      key, name, note, note, interest, now, now, city, email, staff, note, ip);
+    this.log('info', 'web interest', { name, city, phone: Boolean(phone), email: Boolean(email) });
+    const lines = [`📝 اهتمام جديد من الموقع`, `الاسم: ${name}`, city ? `المدينة: ${city}` : '', phone ? `الجوال: +${phone}` : '', email ? `البريد: ${email}` : '', staff, interest ? `الأهم له: ${interest}` : '', note ? `ملاحظة: ${note}` : ''].filter(Boolean);
+    await this.notifyHousehold(lines.join('\n'), 'نموذج الاهتمام').catch(() => {});
+    return json({ ok: true });
   }
 
   // ---------- visitors (numbers not registered in this household, e.g. from the website button) ----------
