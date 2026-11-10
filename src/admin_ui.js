@@ -140,7 +140,7 @@ async function saveRec(){const id=$('#r_id').value;const body={title:$('#r_title
 function editRec(id){const r=window._rec.find(x=>x.id===id);$('#main').innerHTML='<div class="card"><h2>تعديل مهمة</h2>'+recForm(r)+'</div>';freqUI()}
 async function toggleRec(id,active){await api('recurring/'+id,'PUT',{active:!!active});render()}
 async function delRec(id){if(confirm('حذف المهمة الدورية نهائياً؟')){await api('recurring/'+id,'DELETE');render()}}
-async function addPerson(){try{await api('people','POST',{name:$('#p_name').value.trim(),role:$('#p_role').value,lang:$('#p_lang').value,phone:$('#p_phone').value.trim(),gets_summary:$('#p_sum').checked});toast('تمت الإضافة');render()}catch(e){toast(e.message)}}
+async function addPerson(){const name=$('#p_name').value.trim(),phone=$('#p_phone').value.trim();if(!name)return toast('اكتب الاسم');if(!phone)return toast('اكتب رقم واتساب');if(phone.replace(/\\D/g,'').length<9)return toast('الرقم قصير — مثال: 05XXXXXXXX أو 9665XXXXXXXX');try{await api('people','POST',{name,role:$('#p_role').value,lang:$('#p_lang').value,phone,gets_summary:$('#p_sum').checked});toast('تمت الإضافة');render()}catch(e){toast(e.message)}}
 async function welcome(id){try{const r=await api('people/'+id+'/welcome','POST',{});toast(r.sent?'أُرسلت رسالة الترحيب مع الفيديو 🎬':'خارج نافذة 24 ساعة — ستُرسل تلقائياً عند أول رسالة منه');render()}catch(e){toast(e.message)}}
 async function delPerson(id){if(confirm('إزالة هذا الشخص من البوت؟')){await api('people/'+id,'DELETE');render()}}
 async function instAct(id,a){await api('instances/'+id+'/action','POST',{action:a});toast('تم');render()}
