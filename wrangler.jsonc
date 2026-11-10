@@ -3,6 +3,7 @@
   "name": "mudaar-bot",
   "main": "src/worker.js",
   "compatibility_date": "2025-06-01",
+  "keep_vars": true,
   "observability": { "enabled": true },
   "durable_objects": {
     "bindings": [{ "name": "LEDGER", "class_name": "Ledger" }]
