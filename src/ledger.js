@@ -980,55 +980,135 @@ export class Ledger {
   }
 
   // ---------- admin ----------
+  // Two accounts: the owner (ADMIN_USER, default "admin", + ADMIN_PASSWORD from Cloudflare) with full access,
+  // and an optional family account (set by the owner in Settings) that can only view today's board, tasks and requests.
   async admin(request, url) {
     const path = url.pathname;
     const origin = request.headers.get('x-public-origin') || url.origin;
-    const authed = await this.isAuthed(request);
+    const role = await this.sessionRole(request);
 
     if (path === '/admin/login' && request.method === 'POST') {
       const ct = request.headers.get('content-type') || '';
-      let pw = '';
-      if (ct.includes('json')) pw = (await request.json().catch(() => ({}))).password || '';
-      else pw = (await request.formData().catch(() => null))?.get('password') || '';
+      let user = '', pw = '';
+      if (ct.includes('json')) {
+        const j = await request.json().catch(() => ({}));
+        user = j.username || ''; pw = j.password || '';
+      } else {
+        const fd = await request.formData().catch(() => null);
+        user = fd?.get('username') || ''; pw = fd?.get('password') || '';
+      }
+      user = String(user).trim().toLowerCase();
       if (!this.env.ADMIN_PASSWORD) return html(LOGIN_HTML('لم يُضبط ADMIN_PASSWORD في إعدادات Worker بعد.'), 500);
-      if (pw !== this.env.ADMIN_PASSWORD) return html(LOGIN_HTML('كلمة المرور غير صحيحة.'), 401);
-      const cookie = await this.sessionCookie();
+      const r = await this.checkLogin(user, String(pw));
+      if (!r) {
+        this.log('warn', 'admin login failed', { user });
+        return html(LOGIN_HTML('اسم المستخدم أو كلمة المرور غير صحيحة.'), 401);
+      }
+      const cookie = await this.sessionCookie(r);
       return new Response(null, { status: 302, headers: { Location: '/admin', 'Set-Cookie': `mb=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000` } });
     }
     if (path === '/admin/logout') {
       return new Response(null, { status: 302, headers: { Location: '/admin', 'Set-Cookie': 'mb=; Path=/; Max-Age=0' } });
     }
-    if (!authed) {
+    if (!role) {
       if (path.startsWith('/admin/api')) return json({ error: 'unauthorized' }, 401);
       return html(LOGIN_HTML(this.env.ADMIN_PASSWORD ? '' : 'لم يُضبط ADMIN_PASSWORD في إعدادات Worker بعد.'));
     }
-    if (path === '/admin' || path === '/admin/') return html(ADMIN_HTML);
-    if (path.startsWith('/admin/api/')) return this.adminApi(request, url, path.slice('/admin/api/'.length), origin);
+    if (path === '/admin' || path === '/admin/') return html(ADMIN_HTML(role));
+    if (path.startsWith('/admin/api/')) {
+      const route = path.slice('/admin/api/'.length);
+      if (role !== 'owner' && !this.familyAllowed(request.method, route)) return json({ error: 'هذه الصلاحية لربّ البيت فقط' }, 403);
+      return this.adminApi(request, url, route, origin, role);
+    }
     return new Response('not found', { status: 404 });
   }
 
-  async sessionCookie() {
-    const data = new TextEncoder().encode(`mudaar-session:${this.env.ADMIN_PASSWORD}`);
-    const hash = await crypto.subtle.digest('SHA-256', data);
+  ownerUser() {
+    return String(this.env.ADMIN_USER || 'admin').trim().toLowerCase();
+  }
+  familyAllowed(method, route) {
+    if (method !== 'GET') return false;
+    const res = route.split('/')[0].split('?')[0];
+    return ['overview', 'today', 'recurring', 'requests', 'me'].includes(res);
+  }
+  async sha(text) {
+    const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
     return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
   }
-  async isAuthed(request) {
-    if (!this.env.ADMIN_PASSWORD) return false;
+  // returns 'owner' | 'family' | null
+  async checkLogin(user, pw) {
+    if (user === this.ownerUser() && pw === this.env.ADMIN_PASSWORD) return 'owner';
+    const s = this.settings();
+    if (s.family_user && s.family_pass && user === String(s.family_user).toLowerCase()) {
+      const h = await this.sha(`mudaar-family:${s.family_salt || ''}:${pw}`);
+      if (h === s.family_pass) return 'family';
+    }
+    return null;
+  }
+  roleCredential(role) {
+    return role === 'owner' ? this.env.ADMIN_PASSWORD : (this.settings().family_pass || '');
+  }
+  async sessionCookie(role) {
+    const cred = this.roleCredential(role);
+    if (!cred) return '';
+    return `${role}.${await this.sha(`mudaar-session:${role}:${cred}`)}`;
+  }
+  async sessionRole(request) {
+    if (!this.env.ADMIN_PASSWORD) return null;
     const cookie = request.headers.get('cookie') || '';
-    const m = cookie.match(/(?:^|;\s*)mb=([a-f0-9]+)/);
-    if (!m) return false;
-    return m[1] === (await this.sessionCookie());
+    const m = cookie.match(/(?:^|;\s*)mb=(owner|family)\.([a-f0-9]+)/);
+    if (!m) return null;
+    const expected = await this.sessionCookie(m[1]);
+    return expected && `${m[1]}.${m[2]}` === expected ? m[1] : null;
   }
 
-  async adminApi(request, url, route, origin) {
+  async adminApi(request, url, route, origin, role = 'owner') {
     const method = request.method;
     const body = method === 'GET' ? {} : await request.json().catch(() => ({}));
     const [res, id, sub] = route.split('/');
 
     switch (res) {
+      case 'me':
+        return json({ role, user: role === 'owner' ? this.ownerUser() : this.settings().family_user || '' });
+
+      case 'account': {
+        // owner only (enforced by familyAllowed): manage the family (view-only) account
+        if (id === 'family' && method === 'PUT') {
+          const user = String(body.username || '').trim().toLowerCase();
+          const pw = String(body.password || '');
+          if (!/^[a-z0-9._-]{3,32}$/.test(user)) return json({ error: 'اسم المستخدم: 3–32 حرفاً لاتينياً أو أرقاماً' }, 400);
+          if (user === this.ownerUser()) return json({ error: 'هذا اسم المستخدم الرئيسي' }, 400);
+          if (pw.length < 6) return json({ error: 'كلمة المرور 6 أحرف على الأقل' }, 400);
+          const salt = crypto.randomUUID();
+          this.setSetting('family_user', user);
+          this.setSetting('family_salt', salt);
+          this.setSetting('family_pass', await this.sha(`mudaar-family:${salt}:${pw}`));
+          this.log('info', 'family account set', { user });
+          return json({ ok: true, user });
+        }
+        if (id === 'family' && method === 'DELETE') {
+          for (const k of ['family_user', 'family_salt', 'family_pass']) this.setSetting(k, '');
+          return json({ ok: true });
+        }
+        break;
+      }
+
       case 'overview': {
         const s = this.settings();
         const today = this.today();
+        if (role !== 'owner') {
+          return json({
+            today,
+            now: T.timeStr(this.now()),
+            settings: { bot_name: s.bot_name, morning_time: s.morning_time, summary_time: s.summary_time },
+            counts: {
+              people: this.q1(`SELECT COUNT(*) AS n FROM people WHERE active = 1`).n,
+              recurring: this.q1(`SELECT COUNT(*) AS n FROM recurring WHERE active = 1`).n,
+              today_instances: this.q1(`SELECT COUNT(*) AS n FROM instances WHERE date = ?`, today).n,
+              today_done: this.q1(`SELECT COUNT(*) AS n FROM instances WHERE date = ? AND status = 'done'`, today).n,
+            },
+          });
+        }
         return json({
           today,
           now: T.timeStr(this.now()),
@@ -1176,7 +1256,10 @@ export class Ledger {
         ));
 
       case 'settings':
-        if (method === 'GET') return json(this.settings());
+        if (method === 'GET') {
+          const { family_pass, family_salt, ...rest } = this.settings();
+          return json({ ...rest, family_user: rest.family_user || '', owner_user: this.ownerUser() });
+        }
         if (method === 'PUT') {
           for (const [k, v] of Object.entries(body)) if (k in DEFAULT_SETTINGS && !k.startsWith('last_')) this.setSetting(k, v);
           return json({ ok: true, settings: this.settings() });
