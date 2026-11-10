@@ -76,6 +76,9 @@ export class Ledger {
   // ---------- storage helpers ----------
   initSchema() {
     for (const stmt of SCHEMA) this.sql.exec(stmt);
+    for (const col of ['welcome_pending INTEGER DEFAULT 0', 'welcomed_at TEXT']) {
+      try { this.sql.exec(`ALTER TABLE people ADD COLUMN ${col}`); } catch (e) { /* already there */ }
+    }
     for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
       this.sql.exec(`INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)`, k, v);
     }
@@ -119,8 +122,36 @@ export class Ledger {
   get wa() {
     return new WA(this.env);
   }
+  // Welcome flow: greeting with a "received" button → language choice → the one-minute video in that language + contact card.
+  // Started now when the person is inside the 24h window, otherwise flagged and started on their first message.
+  async sendWelcome(p) {
+    const first = (p.name || '').split(' ')[0];
+    const ar = `مرحباً ${first} 👋\nأنا مُدار - مساعد البيت. سأرسل لك المهام والطلبات هنا على واتساب، وتردّ بضغطة زر.\nهل وصلتك هذه الرسالة؟`;
+    const en = `Hi ${first} 👋\nI'm mudaar - Home Assistant. I'll send you tasks and requests here on WhatsApp, and you reply with one tap.\nDid you receive this message?`;
+    const body = p.lang === 'ar' ? ar : `${ar}\n\n${en}`;
+    await this.wa.buttons(p.phone, body, [{ id: 'welcome:ack', title: p.lang === 'ar' ? 'نعم، وصلت' : 'وصلت · Received' }]);
+    this.sql.exec(`UPDATE people SET welcome_pending = 0, welcomed_at = ? WHERE id = ?`, T.isoNow(), p.id);
+    this.log('info', 'welcome sent', { to: p.name });
+  }
+  async askVideoLanguage(p) {
+    return this.wa.buttons(p.phone, 'اختر لغة الفيديو التعريفي 🎬\nChoose the language of the intro video', [
+      { id: 'lang:ar', title: 'العربية' },
+      { id: 'lang:en', title: 'English' },
+    ]);
+  }
+  async sendWelcomeVideo(p, lang) {
+    const origin = this.publicOrigin;
+    const l = lang === 'en' ? 'en' : 'ar';
+    if (origin) {
+      await this.wa.video(p.phone, `${origin}/welcome_${l}.mp4`, l === 'en' ? 'mudaar in one minute 🎬' : 'مُدار في دقيقة 🎬');
+    } else {
+      this.log('warn', 'welcome video: public origin unknown yet');
+    }
+    await this.sendContactCard(p, l);
+  }
+
   // vCard of the bot's own number, so people see its name instead of a bare number once saved
-  async sendContactCard(p) {
+  async sendContactCard(p, lang) {
     let phone = this.settings().bot_phone;
     if (!phone) {
       try {
@@ -130,9 +161,15 @@ export class Ledger {
       } catch (e) { this.log('warn', 'contact card: phone lookup failed', { error: e.message }); }
     }
     if (!phone) return;
-    const hint = p.lang && p.lang !== 'ar' ? 'Save this contact so my messages show my name 👆' : '';
+    const en = 'Save this contact so my messages show my name instead of a number 👆';
+    const ar = 'احفظ هذه البطاقة حتى تظهر رسائلي باسمي بدل الرقم 👆';
+    const l = lang || p.lang || 'ar';
     await this.wa.contactCard(p.phone, 'مُدار - مساعد البيت | mudaar - Home Assistant', phone, { org: 'mudaar' });
-    await this.wa.text(p.phone, `احفظ هذه البطاقة حتى تظهر رسائلي باسمي بدل الرقم 👆${hint ? '\n' + hint : ''}`);
+    await this.wa.text(p.phone, l === 'ar' ? ar : `${ar}\n${en}`);
+  }
+
+  get publicOrigin() {
+    return this.settings().public_origin || '';
   }
 
   get botName() {
@@ -204,6 +241,8 @@ export class Ledger {
         await this.cron();
         return json({ ok: true });
       }
+      const po = request.headers.get('x-public-origin');
+      if (po && po !== this.settings().public_origin) this.setSetting('public_origin', po);
       if (path.startsWith('/admin')) return await this.admin(request, url);
       return new Response('not found', { status: 404 });
     } catch (e) {
@@ -241,11 +280,10 @@ export class Ledger {
       this.log('info', 'message from unknown number', { from, type: msg.type });
       return;
     }
-    const firstContact = !p.last_inbound_at;
     this.sql.exec(`UPDATE people SET last_inbound_at = ? WHERE id = ?`, T.isoNow(), p.id);
     p.last_inbound_at = T.isoNow();
     this.wa.markRead(msg.id);
-    if (firstContact) this.sendContactCard(p).catch(() => {});
+    if (p.welcome_pending) this.sendWelcome(p).catch((e) => this.log('warn', 'welcome failed', { error: e.message }));
 
     let actionId = null;
     let text = null;
@@ -296,6 +334,10 @@ export class Ledger {
         return this.forwardRatingNote(p, parseInt(c, 10));
       case 'nofwd':
         return wa.text(p.phone, 'حسناً، الملاحظة محفوظة لك فقط.');
+      case 'welcome':
+        return this.askVideoLanguage(p);
+      case 'lang':
+        return this.sendWelcomeVideo(p, b);
       case 'sum':
         return b === 'details' ? this.sendSummaryDetails(p) : this.startEveningRating(p);
       case 'rec':
@@ -1003,6 +1045,7 @@ export class Ledger {
   async admin(request, url) {
     const path = url.pathname;
     const origin = request.headers.get('x-public-origin') || url.origin;
+    if (origin && origin !== this.settings().public_origin) this.setSetting('public_origin', origin);
     const role = await this.sessionRole(request);
 
     if (path === '/admin/login' && request.method === 'POST') {
@@ -1145,7 +1188,7 @@ export class Ledger {
         });
       }
       case 'people':
-        if (method === 'GET') return json(this.q(`SELECT id, name, role, phone, lang, gets_summary, active, last_inbound_at FROM people ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'family' THEN 1 WHEN 'maid' THEN 2 ELSE 3 END, id`));
+        if (method === 'GET') return json(this.q(`SELECT id, name, role, phone, lang, gets_summary, active, last_inbound_at, welcome_pending, welcomed_at FROM people ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'family' THEN 1 WHEN 'maid' THEN 2 ELSE 3 END, id`));
         if (method === 'POST') {
           const phone = normalizePhone(body.phone);
           if (!body.name || !phone || !['owner', 'family', 'maid', 'driver'].includes(body.role)) return json({ error: 'بيانات ناقصة' }, 400);
@@ -1155,6 +1198,20 @@ export class Ledger {
             body.name, body.role, phone, body.lang || (body.role === 'maid' || body.role === 'driver' ? 'en' : 'ar'), body.gets_summary ? 1 : 0, T.isoNow()
           );
           return json({ ok: true, id: newId });
+        }
+        if (method === 'POST' && id && sub === 'welcome') {
+          const p = this.q1(`SELECT * FROM people WHERE id = ? AND active = 1`, id);
+          if (!p) return json({ error: 'الشخص غير موجود' }, 404);
+          if (this.canFree(p)) {
+            await this.sendWelcome(p);
+            return json({ ok: true, sent: true });
+          }
+          this.sql.exec(`UPDATE people SET welcome_pending = 1 WHERE id = ?`, id);
+          return json({ ok: true, sent: false, pending: true });
+        }
+        if (method === 'DELETE' && id && sub === 'welcome') {
+          this.sql.exec(`UPDATE people SET welcome_pending = 0 WHERE id = ?`, id);
+          return json({ ok: true });
         }
         if (method === 'PUT' && id) {
           this.sql.exec(
@@ -1327,8 +1384,7 @@ export class Ledger {
           const target = body.phone ? { phone: normalizePhone(body.phone) } : this.owners()[0];
           if (!target) return json({ error: 'لا يوجد رقم' }, 400);
           try {
-            const r = await this.wa.buttons(target.phone, `👋 مرحباً! أنا ${this.botName}. هل تصلك هذه الرسالة؟`, [{ id: 'nofwd', title: 'نعم، وصلت' }]);
-            if (target.id) this.sendContactCard(target).catch(() => {});
+            const r = await this.wa.buttons(target.phone, `👋 مرحباً! أنا ${this.botName}. هل تصلك هذه الرسالة؟`, [{ id: 'welcome:ack', title: 'نعم، وصلت' }]);
             return json({ ok: true, result: r });
           } catch (e) {
             return json({ error: e.message, graph: e.graph }, 500);

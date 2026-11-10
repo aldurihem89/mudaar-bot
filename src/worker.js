@@ -46,7 +46,7 @@ export default {
       ctx.waitUntil(
         stub(env).fetch('https://ledger.internal/webhook', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'x-public-origin': url.origin },
           body: raw,
         })
       );

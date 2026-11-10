@@ -65,6 +65,11 @@ export class WA {
     return this.send({ to, type: 'interactive', interactive });
   }
 
+  // video by public link (mp4/h264, <= 16 MB)
+  video(to, link, caption) {
+    return this.send({ to, type: 'video', video: { link, ...(caption ? { caption: String(caption).slice(0, 1024) } : {}) } });
+  }
+
   // contact card (vCard) so the recipient can save the bot under its name with one tap
   contactCard(to, name, phone, { org } = {}) {
     const wa = String(phone).replace(/\D/g, '');
