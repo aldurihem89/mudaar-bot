@@ -47,7 +47,7 @@ pre{background:var(--tint);border-radius:12px;padding:10px;white-space:pre-wrap;
 
 export function LOGIN_HTML(message = '') {
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mudaar — دخول</title>${FONTS}<style>${CSS}</style></head>
-<body><div class="login"><div class="card"><div class="logo">${LOGO_V(170)}</div><p class="tag">مُدار - مساعد البيت<span class="muted" style="font-weight:600"> | <bdi dir="ltr">mudaar - Home Assistant</bdi></span></p><p class="slogan">كل مهام البيت في محادثة واحدة</p>
+<body><div class="login"><div class="card"><div class="logo">${LOGO_V(170)}</div><p class="tag">مُدار - مساعد البيت<span class="muted" style="font-weight:600"> | <bdi dir="ltr">mudaar - Home Assistant</bdi></span></p><p class="slogan">بيتك، مُدار!<span class="muted" style="font-weight:600"> · </span><bdi dir="ltr" style="font-family:'Outfit',sans-serif">Your home, managed!</bdi></p>
 ${message ? `<p class="pill bad" style="display:block;padding:10px">${message}</p>` : ''}
 <form method="post" action="/admin/login"><label>اسم المستخدم</label><input type="text" name="username" autocapitalize="none" autocorrect="off" autocomplete="username" dir="ltr"><label>كلمة المرور</label><input type="password" name="password" autocomplete="current-password" dir="ltr"><div class="actions"><button class="btn" type="submit">دخول</button></div></form><div class="dots"><i style="background:var(--navy)"></i><i style="background:var(--mint)"></i><i style="background:var(--indigo)"></i></div></div></div></body></html>`;
 }
