@@ -1125,7 +1125,15 @@ export class Ledger {
 
   async adminApi(request, url, route, origin, role = 'owner') {
     const method = request.method;
-    const body = method === 'GET' ? {} : await request.json().catch(() => ({}));
+    let body = {};
+    if (method !== 'GET') {
+      body = await request.json().catch(() => null);
+      if (!body || typeof body !== 'object' || !Object.keys(body).length) {
+        // Safari on iOS occasionally sends an empty body; the admin page also puts the payload in ?_b=
+        const qb = url.searchParams.get('_b');
+        if (qb) { try { body = JSON.parse(qb); } catch (e) { body = {}; } } else body = {};
+      }
+    }
     const [res, id, sub] = route.split('/');
 
     switch (res) {
