@@ -131,7 +131,7 @@ export class Ledger {
     }
     if (!phone) return;
     const hint = p.lang && p.lang !== 'ar' ? 'Save this contact so my messages show my name 👆' : '';
-    await this.wa.contactCard(p.phone, this.botName, phone, { org: 'mudaar · مُدار' });
+    await this.wa.contactCard(p.phone, 'مُدار - مساعد البيت | mudaar - Home Assistant', phone, { org: 'mudaar' });
     await this.wa.text(p.phone, `احفظ هذه البطاقة حتى تظهر رسائلي باسمي بدل الرقم 👆${hint ? '\n' + hint : ''}`);
   }
 
