@@ -34,6 +34,8 @@ const SCHEMA = [
      score INTEGER, note TEXT, forwarded INTEGER DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, level TEXT, msg TEXT, data TEXT)`,
   `CREATE TABLE IF NOT EXISTS seen (msg_id TEXT PRIMARY KEY, ts TEXT)`,
+  `CREATE TABLE IF NOT EXISTS leads (id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT UNIQUE, name TEXT, first_text TEXT, last_text TEXT,
+     messages INTEGER DEFAULT 0, interest TEXT, first_at TEXT, last_at TEXT, last_reply_at TEXT)`,
   `CREATE INDEX IF NOT EXISTS idx_inst_date ON instances(date)`,
   `CREATE INDEX IF NOT EXISTS idx_req_created ON requests(created_at)`,
 ];
@@ -261,6 +263,8 @@ export class Ledger {
           this.sql.exec(`INSERT INTO seen(msg_id, ts) VALUES (?, ?)`, msg.id, T.isoNow());
           this.sql.exec(`DELETE FROM seen WHERE ts < ?`, new Date(Date.now() - 3 * 86400000).toISOString());
           try {
+            const c = (value.contacts || []).find((x) => x.wa_id === msg.from) || (value.contacts || [])[0];
+            msg._profileName = c?.profile?.name || null;
             await this.onMessage(msg);
           } catch (e) {
             this.log('error', 'onMessage: ' + e.message, { msg });
@@ -273,13 +277,49 @@ export class Ledger {
     }
   }
 
+  // ---------- visitors (numbers not registered in this household, e.g. from the website button) ----------
+  async onVisitor(from, msg) {
+    const text = msg.text?.body?.trim() || (msg.interactive?.button_reply?.title) || msg.button?.text || '';
+    const action = msg.interactive?.button_reply?.id || msg.button?.payload || null;
+    const name = msg._profileName || null;
+    const now = T.isoNow();
+    const lead = this.q1(`SELECT * FROM leads WHERE phone = ?`, from);
+    if (!lead) {
+      this.run(`INSERT INTO leads(phone, name, first_text, last_text, messages, first_at, last_at) VALUES (?, ?, ?, ?, 1, ?, ?)`, from, name, text, text, now, now);
+    } else {
+      this.sql.exec(`UPDATE leads SET last_text = ?, messages = messages + 1, last_at = ?, name = COALESCE(?, name) WHERE phone = ?`, text, now, name, from);
+    }
+    this.wa.markRead(msg.id);
+    const fresh = this.q1(`SELECT * FROM leads WHERE phone = ?`, from);
+    if (action === 'lead:trial' || action === 'lead:info') {
+      const interest = action === 'lead:trial' ? 'تجربة' : 'استفسار';
+      this.sql.exec(`UPDATE leads SET interest = ? WHERE phone = ?`, interest, from);
+      await this.wa.text(from, action === 'lead:trial'
+        ? 'رائع 🙌 سجّلنا اهتمامك بتجربة مُدار لبيتك. سيتواصل معك فريق مُدار على هذا الرقم خلال أيام.\nGreat — we noted your interest in trying mudaar; we will reach out on this number within days.'
+        : 'تمام 👍 اكتب استفسارك هنا وسيصل إلى فريق مُدار ويُردّ عليك على هذا الرقم.\nSure — type your question here and the mudaar team will reply on this number.');
+      await this.notifyHousehold(`👤 مهتم بمُدار (${interest}): +${from}${fresh.name ? ' · ' + fresh.name : ''}`, 'زائر الموقع');
+      return;
+    }
+    // first contact (or after a quiet day): brand welcome with two buttons; later messages are relayed to the owner
+    const replyAgain = !fresh.last_reply_at || T.hoursSince(fresh.last_reply_at) > 24;
+    if (replyAgain) {
+      await this.wa.buttons(from,
+        'أهلًا بك في مُدار 👋\nمُدار مساعد بيت على واتساب: يرسل المهام للعاملة والسائق، يستقبل طلباتك، ويرسل لك تقرير المساء.\nالخدمة الآن في مرحلة تجريبية محدودة. كيف نساعدك؟\n\nWelcome to mudaar — a WhatsApp home assistant for your household staff. We are in a limited pilot. How can we help?',
+        [{ id: 'lead:trial', title: 'أرغب بالتجربة' }, { id: 'lead:info', title: 'لديّ استفسار' }]);
+      this.sql.exec(`UPDATE leads SET last_reply_at = ? WHERE phone = ?`, now, from);
+      this.log('info', 'visitor welcomed', { from, name });
+    }
+    if (text && fresh.messages > 1) {
+      await this.notifyHousehold(`💬 زائر الموقع +${from}${fresh.name ? ' (' + fresh.name + ')' : ''}: ${text}`, 'زائر الموقع');
+    } else if (!text && !action) {
+      this.log('info', 'visitor non-text message', { from, type: msg.type });
+    }
+  }
+
   async onMessage(msg) {
     const from = normalizePhone(msg.from);
     const p = this.personByPhone(from);
-    if (!p) {
-      this.log('info', 'message from unknown number', { from, type: msg.type });
-      return;
-    }
+    if (!p) return this.onVisitor(from, msg);
     this.sql.exec(`UPDATE people SET last_inbound_at = ? WHERE id = ?`, T.isoNow(), p.id);
     p.last_inbound_at = T.isoNow();
     this.wa.markRead(msg.id);
@@ -1390,9 +1430,14 @@ export class Ledger {
       case 'log':
         return json(this.q(`SELECT * FROM log ORDER BY id DESC LIMIT 200`));
 
+      case 'leads':
+        if (method === 'GET') return json(this.q(`SELECT * FROM leads ORDER BY last_at DESC LIMIT 200`));
+        if (method === 'DELETE' && id) { this.sql.exec(`DELETE FROM leads WHERE id = ?`, id); return json({ ok: true }); }
+        break;
+
       case 'export': {
         const table = id;
-        const allowed = { people: 'SELECT id,name,role,phone,lang,gets_summary,active,last_inbound_at FROM people', recurring: 'SELECT * FROM recurring', instances: 'SELECT * FROM instances ORDER BY date DESC', requests: 'SELECT * FROM requests ORDER BY id DESC', shopping: 'SELECT * FROM shopping ORDER BY id DESC', ratings: 'SELECT * FROM ratings ORDER BY id DESC' };
+        const allowed = { people: 'SELECT id,name,role,phone,lang,gets_summary,active,last_inbound_at FROM people', recurring: 'SELECT * FROM recurring', instances: 'SELECT * FROM instances ORDER BY date DESC', requests: 'SELECT * FROM requests ORDER BY id DESC', shopping: 'SELECT * FROM shopping ORDER BY id DESC', ratings: 'SELECT * FROM ratings ORDER BY id DESC', leads: 'SELECT * FROM leads ORDER BY id DESC' };
         if (!allowed[table]) return json({ error: 'جدول غير معروف' }, 400);
         const rows = this.q(allowed[table]);
         const cols = rows.length ? Object.keys(rows[0]) : [];
