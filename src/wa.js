@@ -132,7 +132,12 @@ export class WA {
 
   // ---- account management ----
   phoneInfo() {
-    return this.graph(`${this.phoneId}?fields=display_phone_number,verified_name,quality_rating,code_verification_status,name_status,platform_type,status`);
+    return this.graph(`${this.phoneId}?fields=display_phone_number,verified_name,new_display_name,quality_rating,code_verification_status,name_status,platform_type,status`);
+  }
+
+  // request a new display name for the number (Meta reviews it; name_status becomes PENDING_REVIEW)
+  setDisplayName(name) {
+    return this.graph(`${this.phoneId}`, { method: 'POST', body: { new_display_name: String(name) } });
   }
 
   register(pin) {

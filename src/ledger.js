@@ -1482,6 +1482,20 @@ export class Ledger {
           const r = await wa.subscribeApp();
           return json({ ok: true, result: r });
         }
+        case 'display_name': {
+          const name = String(body.name || '').trim();
+          if (name.length < 3) return json({ error: 'اكتب الاسم' }, 400);
+          try {
+            const r = await wa.setDisplayName(name);
+            this.log('info', 'display name requested', { name, result: r });
+            return json({ ok: true, result: r });
+          } catch (e) {
+            const g = e.graph || {};
+            const detail = g.error_user_msg || g.error_user_title || g.message || e.message;
+            this.log('warn', 'display name request failed', { name, error: detail, code: g.code, sub: g.error_subcode });
+            return json({ error: detail }, 400);
+          }
+        }
         case 'templates': {
           const existing = ((await wa.listTemplates()).data || []).map((x) => x.name);
           const results = [];
