@@ -609,7 +609,7 @@ export class Ledger {
         if (mediaId) await this.wa.send({ to: p.phone, type: 'image', image: { id: mediaId } }).catch(() => {});
         await this.wa.text(p.phone, text);
       } else {
-        await this.wa.template(p.phone, 'house_notice', [subject || 'البيت', text]);
+        await this.wa.template(p.phone, 'task_status_update', [subject || 'البيت', text]);
       }
     } catch (e) {
       this.log('error', `notify ${p.name}: ${e.message}`);
@@ -926,7 +926,7 @@ export class Ledger {
         try {
           let res;
           if (free) res = await this.wa.buttons(w.phone, `${n}. ${prefix}${inst.title}${l2 ? '\n' + l2 : ''}`, btns);
-          else res = await this.wa.template(w.phone, 'daily_task', [`${n}/${total}`, prefix + inst.title, l2 || '·'], btns.map((b) => b.id));
+          else res = await this.wa.template(w.phone, 'task_assigned', [`${n}/${total}`, prefix + inst.title, l2 || '·'], btns.map((b) => b.id));
           this.sql.exec(`UPDATE instances SET status = 'sent', sent_at = ?, wa_message_id = ? WHERE id = ?`, T.isoNow(), res?.messages?.[0]?.id || null, inst.id);
         } catch (e) {
           this.log('error', `send instance ${inst.id}: ${e.message}`);
@@ -970,7 +970,7 @@ export class Ledger {
     ];
     try {
       if (this.canFree(w)) await this.wa.buttons(w.phone, `⏰ تذكير: ${i.title}${i.title_l2 ? '\n' + i.title_l2 : ''}`, btns);
-      else await this.wa.template(w.phone, 'task_reminder', [i.title, i.title_l2 || '·'], btns.map((b) => b.id));
+      else await this.wa.template(w.phone, 'task_followup', [i.title, i.title_l2 || '·'], btns.map((b) => b.id));
       this.sql.exec(`UPDATE instances SET reminders = reminders + 1, last_reminded_at = ? WHERE id = ?`, T.isoNow(), i.id);
     } catch (e) {
       this.log('error', 'remindInstance: ' + e.message);
@@ -988,7 +988,7 @@ export class Ledger {
     ];
     try {
       if (this.canFree(w)) await this.wa.buttons(w.phone, `⏰ تذكير بطلب: ${r.text}${r.text_l2 ? '\n' + r.text_l2 : ''}`, btns);
-      else await this.wa.template(w.phone, 'task_reminder', [r.text, r.text_l2 || '·'], btns.map((b) => b.id));
+      else await this.wa.template(w.phone, 'task_followup', [r.text, r.text_l2 || '·'], btns.map((b) => b.id));
     } catch (e) {
       this.log('error', 'remindRequest: ' + e.message);
     }

@@ -9,13 +9,13 @@ const BTN3 = [
 
 export const TEMPLATES = [
   {
-    name: 'daily_task',
+    name: 'task_assigned',
     language: 'ar',
     category: 'UTILITY',
     components: [
       {
         type: 'BODY',
-        text: 'مهمة اليوم {{1}} من مساعد البيت:\n{{2}}\n{{3}}\nعند الانتهاء اختر من الأزرار بالأسفل.',
+        text: 'تذكير بالمهمة المجدولة رقم {{1}} المتفق عليها لهذا اليوم:\n{{2}}\n{{3}}\nيرجى تحديث حالة تنفيذ هذه المهمة من الأزرار أدناه.',
         example: { body_text: [['1/3', 'تنظيف المطبخ', 'Clean the kitchen']] },
       },
       { type: 'BUTTONS', buttons: BTN3 },
@@ -35,13 +35,13 @@ export const TEMPLATES = [
     ],
   },
   {
-    name: 'task_reminder',
+    name: 'task_followup',
     language: 'ar',
     category: 'UTILITY',
     components: [
       {
         type: 'BODY',
-        text: '⏰ تذكير من مساعد البيت بمهمة لم تكتمل بعد:\n{{1}}\n{{2}}\nاختر من الأزرار بالأسفل.',
+        text: 'متابعة لحالة المهمة المجدولة التالية، ولم يصلنا تحديث لها بعد:\n{{1}}\n{{2}}\nيرجى تحديث حالة التنفيذ من الأزرار أدناه.',
         example: { body_text: [['تنظيف المجلس', 'Clean the majlis']] },
       },
       { type: 'BUTTONS', buttons: BTN3 },
@@ -108,13 +108,13 @@ export const TEMPLATES = [
     ],
   },
   {
-    name: 'house_notice',
+    name: 'task_status_update',
     language: 'ar',
     category: 'UTILITY',
     components: [
       {
         type: 'BODY',
-        text: '📣 إشعار من مساعد البيت بخصوص {{1}}:\n{{2}}\nيمكنك الرد على هذه الرسالة مباشرة.',
+        text: 'تحديث حالة بخصوص {{1}} المسجّلة لديكم:\n{{2}}\nيمكنكم الرد على هذه الرسالة لمتابعة الحالة.',
         example: { body_text: [['مهمة تنظيف المجلس', 'العاملة أبلغت عن مشكلة: مكواة البخار لا تعمل']] },
       },
     ],
