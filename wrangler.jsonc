@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mudaar-bot",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-06-01",
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [{ "name": "LEDGER", "class_name": "Ledger" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger"] }],
+  "ai": { "binding": "AI" },
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": {
+    "TIMEZONE_OFFSET_MINUTES": "180",
+    "GRAPH_VERSION": "v23.0"
+  }
+}
