@@ -5,7 +5,7 @@
   "compatibility_date": "2025-06-01",
   "keep_vars": true,
   "observability": { "enabled": true },
-  "assets": { "directory": "./public" },
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
   "durable_objects": {
     "bindings": [{ "name": "LEDGER", "class_name": "Ledger" }]
   },
@@ -14,6 +14,8 @@
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     "TIMEZONE_OFFSET_MINUTES": "180",
-    "GRAPH_VERSION": "v23.0"
+    "GRAPH_VERSION": "v23.0",
+    "PUBLIC_HOSTS": "mudaar-hs.com,www.mudaar-hs.com",
+    "APP_HOST": "app.mudaar-hs.com"
   }
 }

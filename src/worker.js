@@ -53,11 +53,18 @@ export default {
       return new Response('ok', { status: 200 });
     }
 
+    // Two faces of the same Worker: the public site (mudaar-hs.com) and the household app (app.mudaar-hs.com / workers.dev)
+    const publicHosts = String(env.PUBLIC_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean);
+    const isPublicHost = publicHosts.includes(url.hostname);
+    const appOrigin = env.APP_HOST ? `https://${env.APP_HOST}` : url.origin;
+
     if (path === '/' || path === '') {
+      if (isPublicHost && env.ASSETS) return env.ASSETS.fetch(request);
       return Response.redirect(url.origin + '/admin', 302);
     }
 
     if (path.startsWith('/admin')) {
+      if (isPublicHost) return Response.redirect(appOrigin + path, 302);
       // Forward to the Durable Object, preserving method, headers, body and the public origin
       const headers = new Headers(request.headers);
       headers.set('x-public-origin', url.origin);
@@ -66,6 +73,7 @@ export default {
     }
 
     if (path === '/health') return new Response('ok');
+    if (env.ASSETS) return env.ASSETS.fetch(request); // static files: site pages, welcome videos
     return new Response('not found', { status: 404 });
   },
 
