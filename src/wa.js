@@ -65,6 +65,20 @@ export class WA {
     return this.send({ to, type: 'interactive', interactive });
   }
 
+  // contact card (vCard) so the recipient can save the bot under its name with one tap
+  contactCard(to, name, phone, { org } = {}) {
+    const wa = String(phone).replace(/\D/g, '');
+    return this.send({
+      to,
+      type: 'contacts',
+      contacts: [{
+        name: { formatted_name: name, first_name: name },
+        phones: [{ phone: `+${wa}`, wa_id: wa, type: 'WORK' }],
+        ...(org ? { org: { company: org } } : {}),
+      }],
+    });
+  }
+
   // sections: [{title, rows:[{id,title,description}]}] max 10 rows total
   list(to, body, buttonText, sections, { header, footer } = {}) {
     const interactive = {

@@ -119,6 +119,22 @@ export class Ledger {
   get wa() {
     return new WA(this.env);
   }
+  // vCard of the bot's own number, so people see its name instead of a bare number once saved
+  async sendContactCard(p) {
+    let phone = this.settings().bot_phone;
+    if (!phone) {
+      try {
+        const info = await this.wa.phoneInfo();
+        phone = String(info.display_phone_number || '').replace(/\D/g, '');
+        if (phone) this.setSetting('bot_phone', phone);
+      } catch (e) { this.log('warn', 'contact card: phone lookup failed', { error: e.message }); }
+    }
+    if (!phone) return;
+    const hint = p.lang && p.lang !== 'ar' ? 'Save this contact so my messages show my name 👆' : '';
+    await this.wa.contactCard(p.phone, this.botName, phone, { org: 'mudaar · مُدار' });
+    await this.wa.text(p.phone, `احفظ هذه البطاقة حتى تظهر رسائلي باسمي بدل الرقم 👆${hint ? '\n' + hint : ''}`);
+  }
+
   get botName() {
     return this.settings().bot_name || 'مساعد البيت';
   }
@@ -225,9 +241,11 @@ export class Ledger {
       this.log('info', 'message from unknown number', { from, type: msg.type });
       return;
     }
+    const firstContact = !p.last_inbound_at;
     this.sql.exec(`UPDATE people SET last_inbound_at = ? WHERE id = ?`, T.isoNow(), p.id);
     p.last_inbound_at = T.isoNow();
     this.wa.markRead(msg.id);
+    if (firstContact) this.sendContactCard(p).catch(() => {});
 
     let actionId = null;
     let text = null;
@@ -1310,6 +1328,7 @@ export class Ledger {
           if (!target) return json({ error: 'لا يوجد رقم' }, 400);
           try {
             const r = await this.wa.buttons(target.phone, `👋 مرحباً! أنا ${this.botName}. هل تصلك هذه الرسالة؟`, [{ id: 'nofwd', title: 'نعم، وصلت' }]);
+            if (target.id) this.sendContactCard(target).catch(() => {});
             return json({ ok: true, result: r });
           } catch (e) {
             return json({ error: e.message, graph: e.graph }, 500);
