@@ -609,7 +609,11 @@ export class Ledger {
         if (mediaId) await this.wa.send({ to: p.phone, type: 'image', image: { id: mediaId } }).catch(() => {});
         await this.wa.text(p.phone, text);
       } else {
-        await this.wa.template(p.phone, 'task_status_update', [subject || 'البيت', text]);
+        // outside the 24h window: utility template keyed by a running notice number
+        const n = parseInt(this.settings().notice_seq || '1000', 10) + 1;
+        this.setSetting('notice_seq', String(n));
+        const body = subject && !text.includes(subject) ? `${subject}: ${text}` : text;
+        await this.wa.template(p.phone, 'request_update', [String(n), body]);
       }
     } catch (e) {
       this.log('error', `notify ${p.name}: ${e.message}`);
