@@ -1188,7 +1188,7 @@ export class Ledger {
         });
       }
       case 'people':
-        if (method === 'GET') return json(this.q(`SELECT id, name, role, phone, lang, gets_summary, active, last_inbound_at, welcome_pending, welcomed_at FROM people ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'family' THEN 1 WHEN 'maid' THEN 2 ELSE 3 END, id`));
+        if (method === 'GET') return json(this.q(`SELECT id, name, role, phone, lang, gets_summary, active, last_inbound_at, welcome_pending, welcomed_at FROM people WHERE active = 1 ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'family' THEN 1 WHEN 'maid' THEN 2 ELSE 3 END, id`));
         if (method === 'POST') {
           const phone = normalizePhone(body.phone);
           if (!body.name) return json({ error: 'الاسم مطلوب' }, 400);
