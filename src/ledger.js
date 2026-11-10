@@ -1191,14 +1191,19 @@ export class Ledger {
         if (method === 'GET') return json(this.q(`SELECT id, name, role, phone, lang, gets_summary, active, last_inbound_at, welcome_pending, welcomed_at FROM people WHERE active = 1 ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'family' THEN 1 WHEN 'maid' THEN 2 ELSE 3 END, id`));
         if (method === 'POST') {
           const phone = normalizePhone(body.phone);
-          if (!body.name) return json({ error: 'الاسم مطلوب' }, 400);
-          if (!phone || phone.length < 9) return json({ error: 'رقم واتساب غير صالح' }, 400);
-          if (!['owner', 'family', 'maid', 'driver'].includes(body.role)) return json({ error: 'الدور غير صالح' }, 400);
+          if (!body.name || !phone || phone.length < 9 || !['owner', 'family', 'maid', 'driver'].includes(body.role)) {
+            this.log('warn', 'people add rejected', { got: Object.keys(body), name: body.name || '', phone_len: phone.length, role: body.role || '' });
+            if (!body.name) return json({ error: 'الاسم مطلوب' }, 400);
+            if (!phone || phone.length < 9) return json({ error: 'رقم واتساب غير صالح' }, 400);
+            return json({ error: 'الدور غير صالح' }, 400);
+          }
+          const existing = this.q1(`SELECT id, name, active FROM people WHERE phone = ?`, phone);
           const newId = this.run(
             `INSERT INTO people(name, role, phone, lang, gets_summary, active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)
              ON CONFLICT(phone) DO UPDATE SET name = excluded.name, role = excluded.role, lang = excluded.lang, gets_summary = excluded.gets_summary, active = 1`,
             body.name, body.role, phone, body.lang || (body.role === 'maid' || body.role === 'driver' ? 'en' : 'ar'), body.gets_summary ? 1 : 0, T.isoNow()
           );
+          if (existing && existing.active) return json({ ok: true, id: existing.id, updated: true, previous: existing.name });
           return json({ ok: true, id: newId });
         }
         if (method === 'POST' && id && sub === 'welcome') {
