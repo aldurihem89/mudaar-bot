@@ -846,6 +846,33 @@ export class Ledger {
     if (s.quiet_enabled === '1' && !T.isInQuietHours(nowMin, s.quiet_start, s.quiet_end)) {
       for (const r of this.q(`SELECT id FROM requests WHERE status = 'queued'`)) await this.deliverRequest(r.id);
     }
+
+    // 7. Template approval watch: every 30 min until all approved; tells the owner when done (or if one is rejected)
+    if (s.templates_watch !== 'done' && T.hoursSince(s.templates_checked_at || null) * 60 >= 29) {
+      await this.watchTemplates().catch((e) => this.log('warn', 'template watch failed', { error: e.message }));
+    }
+  }
+
+  async watchTemplates() {
+    this.setSetting('templates_checked_at', T.isoNow());
+    const all = (await this.wa.listTemplates()).data || [];
+    const mine = TEMPLATE_NAMES.map((n) => ({ name: n, t: all.find((x) => x.name === n && x.language === 'ar') }));
+    const missing = mine.filter((m) => !m.t);
+    if (missing.length) return; // not created yet; nothing to watch
+    const rejected = mine.filter((m) => m.t.status === 'REJECTED');
+    const approved = mine.filter((m) => m.t.status === 'APPROVED');
+    const lastRejected = this.settings().templates_rejected_notified || '';
+    if (rejected.length && rejected.map((r) => r.name).join(',') !== lastRejected) {
+      this.setSetting('templates_rejected_notified', rejected.map((r) => r.name).join(','));
+      const lines = rejected.map((r) => `• ${r.name}: ${r.t.rejected_reason || 'بدون سبب'}`).join('\n');
+      for (const o of this.owners()) await this.safeNotify(o, `⚠️ رفضت Meta ${rejected.length} من القوالب:\n${lines}\nسيعاد ضبط صياغتها وإرسالها.`, 'القوالب');
+      this.log('warn', 'templates rejected', { names: rejected.map((r) => r.name) });
+    }
+    if (approved.length === mine.length) {
+      this.setSetting('templates_watch', 'done');
+      for (const o of this.owners()) await this.safeNotify(o, `✅ اعتُمدت القوالب السبعة. يمكن الآن مراسلة أي شخص تضيفه حتى لو لم يراسل البوت من قبل — أضف العاملة والسائق متى شئت.`, 'القوالب');
+      this.log('info', 'templates all approved');
+    }
   }
 
   createInstancesFor(date) {
