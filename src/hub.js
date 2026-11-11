@@ -45,9 +45,23 @@ export class Hub {
 
   // The deployment's first household is the platform owner's own house, which already exists under the id "main".
   async ensureMain(origin) {
-    if (this.q1(`SELECT 1 FROM households WHERE id = ?`, MAIN)) return;
+    if (this.q1(`SELECT 1 FROM households WHERE id = ?`, MAIN)) return this.ensureMainOwner();
     this.sql.exec(`INSERT INTO households(id, name, owner_name, owner_phone, status, created_at, notes) VALUES (?, ?, ?, ?, 'active', ?, ?)`,
       MAIN, 'منزلي', '', '', now(), 'platform');
+    await this.importMainPeople();
+    this.ensureMainOwner();
+  }
+
+  // the platform owner's own house behaves like any other household: its owner has a login row (phone + password via invite)
+  ensureMainOwner() {
+    const hh = this.q1(`SELECT * FROM households WHERE id = ?`, MAIN);
+    if (!hh || !hh.owner_phone) return;
+    if (this.q1(`SELECT 1 FROM users WHERE household_id = ? AND role = 'owner'`, MAIN)) return;
+    if (this.q1(`SELECT 1 FROM users WHERE phone = ?`, hh.owner_phone)) return;
+    this.sql.exec(`INSERT INTO users(phone, household_id, role, name, created_at) VALUES (?, ?, 'owner', ?, ?)`, hh.owner_phone, MAIN, hh.owner_name || '', now());
+  }
+
+  async importMainPeople() {
     try {
       const r = await this.ledger(MAIN).fetch('https://ledger.internal/internal/people', { headers: { 'x-household': MAIN } });
       const people = r.ok ? await r.json() : [];
@@ -129,7 +143,7 @@ export class Hub {
     const kind = body.kind === 'admin' ? 'admin' : body.kind === 'owner' ? 'owner' : '';
     if (kind !== 'owner' && pw === env.ADMIN_PASSWORD && (id === superUser || (superPhone && normalizePhone(id) === superPhone))) {
       const main = this.q1(`SELECT * FROM households WHERE id = ?`, MAIN);
-      return json({ ok: true, session: { h: MAIN, r: 'super', u: id, n: main?.owner_name || 'ربّ البيت', hn: main?.name || 'منزلي' } });
+      return json({ ok: true, session: { h: MAIN, r: 'super', u: id, n: main?.owner_name || 'مدير مُدار', hn: 'لوحة المنصة' } });
     }
     if (kind === 'admin') return json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' }, 401);
     const phone = normalizePhone(id);
@@ -196,6 +210,7 @@ export class Hub {
     if (res === 'households') {
       if (!isSuper) return json({ error: 'لمدير المنصة فقط' }, 403);
       if (method === 'GET' && !id) {
+        if (!this.q1(`SELECT 1 FROM households WHERE id = ? AND owner_phone != ''`, MAIN)) { await this.importMainPeople(); this.ensureMainOwner(); }
         const list = this.q(`SELECT * FROM households ORDER BY CASE id WHEN 'main' THEN 0 ELSE 1 END, created_at DESC`);
         return json(list.map((h) => {
           const owner = this.q1(`SELECT phone, name, pass_hash, invite_token, invite_expires, last_login_at FROM users WHERE household_id = ? AND role = 'owner'`, h.id);
@@ -239,6 +254,16 @@ export class Hub {
         return json({ ok: true });
       }
       if (id && method === 'PUT') {
+        if (id === MAIN && body.owner_phone) {
+          const ph = normalizePhone(body.owner_phone);
+          if (!ph || ph.length < 9) return json({ error: 'رقم الجوال غير صالح' }, 400);
+          const taken = this.q1(`SELECT household_id FROM users WHERE phone = ?`, ph);
+          if (taken && taken.household_id !== MAIN) return json({ error: 'هذا الرقم له حساب في منزل آخر' }, 409);
+          this.sql.exec(`UPDATE households SET owner_name = ?, owner_phone = ? WHERE id = ?`, String(body.owner_name || '').trim().slice(0, 60), ph, MAIN);
+          this.sql.exec(`DELETE FROM users WHERE household_id = ? AND role = 'owner' AND phone != ?`, MAIN, ph);
+          this.sql.exec(`INSERT OR IGNORE INTO phone_index(phone, household_id, added_at) VALUES (?, ?, ?)`, ph, MAIN, now());
+          this.ensureMainOwner();
+        }
         if (body.name) this.sql.exec(`UPDATE households SET name = ? WHERE id = ?`, String(body.name).trim().slice(0, 80), id);
         if (body.notes != null) this.sql.exec(`UPDATE households SET notes = ? WHERE id = ?`, String(body.notes).slice(0, 500), id);
         return json({ ok: true });

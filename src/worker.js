@@ -134,12 +134,14 @@ export default {
       // platform owner switching into another household's board (and back)
       if (path.startsWith('/admin/switch/')) {
         if (session.r !== 'super' && !session.su) return jsonRes({ error: 'forbidden' }, 403);
-        const target = path.slice('/admin/switch/'.length) || MAIN;
-        if (target === MAIN) return redirect('/admin', { 'Set-Cookie': await makeCookie(env, { h: MAIN, r: 'super', u: session.u, n: session.n, hn: session.hn0 || 'منزلي' }) });
+        const target = path.slice('/admin/switch/'.length) || 'console';
+        // back to the platform console (no household open)
+        if (target === 'console') return redirect('/admin', { 'Set-Cookie': await makeCookie(env, { h: MAIN, r: 'super', u: session.u, n: session.n, hn: 'لوحة المنصة' }) });
         const r = await hub(env).fetch(`https://hub.internal/api/households/${target}`, { headers: { ...stdHeaders, 'x-role': 'super', 'x-household': MAIN } });
         if (!r.ok) return jsonRes({ error: 'المنزل غير موجود' }, 404);
         const hh = await r.json();
-        return redirect('/admin', { 'Set-Cookie': await makeCookie(env, { h: target, r: 'owner', su: 1, u: session.u, n: session.n, hn: hh.name, hn0: session.hn0 || session.hn }) });
+        // open a household's board (the platform owner's own house "main" included) as its owner
+        return redirect('/admin', { 'Set-Cookie': await makeCookie(env, { h: target, r: 'owner', su: 1, u: session.u, n: session.n, hn: hh.name }) });
       }
 
       const fwdHeaders = new Headers(request.headers);

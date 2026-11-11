@@ -1228,7 +1228,9 @@ export class Ledger {
       const route = path.slice('/admin/api/'.length);
       const isOwner = role === 'owner' || role === 'super';
       if (!isOwner && !this.familyAllowed(request.method, route)) return json({ error: 'هذه الصلاحية لربّ البيت فقط' }, 403);
-      if (route.split('/')[0] === 'setup' && !this.isPlatform) return json({ error: 'إعداد المنصة متاح لمدير مُدار فقط' }, 403);
+      const head = route.split('/')[0];
+      const platformOnly = head === 'setup' || head === 'leads' || route === 'export/leads';
+      if (platformOnly && (!this.isPlatform || role !== 'super')) return json({ error: 'متاح لمدير مُدار فقط' }, 403);
       return this.adminApi(request, url, route, origin, isOwner ? 'owner' : 'family');
     }
     return new Response('not found', { status: 404 });
