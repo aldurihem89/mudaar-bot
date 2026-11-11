@@ -162,6 +162,9 @@ export class WA {
   createTemplate(def) {
     return this.graph(`${this.wabaId}/message_templates`, { method: 'POST', body: def });
   }
+  deleteTemplate(name) {
+    return this.graph(`${this.wabaId}/message_templates?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+  }
 
   // Configure the app webhook (needs APP_ID + APP_SECRET)
   setAppWebhook(appId, appSecret, callbackUrl, verifyToken) {

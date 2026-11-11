@@ -929,12 +929,50 @@ export class Ledger {
     }
   }
 
+  noteTemplateSubmitted(name) {
+    let m = {};
+    try { m = JSON.parse(this.settings().templates_submitted || '{}'); } catch (e) { m = {}; }
+    m[name] = T.isoNow();
+    this.setSetting('templates_submitted', JSON.stringify(m));
+  }
+
+  // A template still PENDING after 26h is deleted and re-created once; this often restarts a stalled review.
+  async resubmitStuckTemplates(mine) {
+    let m = {}, done = {};
+    try { m = JSON.parse(this.settings().templates_submitted || '{}'); } catch (e) { m = {}; }
+    try { done = JSON.parse(this.settings().templates_resubmitted || '{}'); } catch (e) { done = {}; }
+    const stuck = mine.filter((x) => x.t && x.t.status === 'PENDING' && T.hoursSince(m[x.name] || null) > 26 && !done[x.name]);
+    if (!stuck.length) return [];
+    const names = [];
+    for (const x of stuck) {
+      const def = TEMPLATES.find((d) => d.name === x.name);
+      if (!def) continue;
+      try {
+        await this.wa.deleteTemplate(x.name);
+        await new Promise((r) => setTimeout(r, 1500));
+        await this.wa.createTemplate(def);
+        done[x.name] = T.isoNow();
+        this.noteTemplateSubmitted(x.name);
+        names.push(x.name);
+      } catch (e) {
+        this.log('warn', 'template resubmit failed', { name: x.name, error: e.graph?.message || e.message });
+      }
+    }
+    this.setSetting('templates_resubmitted', JSON.stringify(done));
+    if (names.length) {
+      this.log('info', 'templates resubmitted', { names });
+      for (const o of this.owners()) await this.safeNotify(o, `🔁 أعدت إرسال ${names.length} قوالب بقيت قيد المراجعة أكثر من 26 ساعة: ${names.join('، ')}. سأبلغك عند اعتمادها.`, 'القوالب');
+    }
+    return names;
+  }
+
   async watchTemplates() {
     this.setSetting('templates_checked_at', T.isoNow());
     const all = (await this.wa.listTemplates()).data || [];
     const mine = TEMPLATE_NAMES.map((n) => ({ name: n, t: all.find((x) => x.name === n && x.language === 'ar') }));
     const missing = mine.filter((m) => !m.t);
     if (missing.length) return; // not created yet; nothing to watch
+    await this.resubmitStuckTemplates(mine);
     const rejected = mine.filter((m) => m.t.status === 'REJECTED');
     const approved = mine.filter((m) => m.t.status === 'APPROVED');
     const lastRejected = this.settings().templates_rejected_notified || '';
@@ -1581,6 +1619,7 @@ export class Ledger {
             try {
               const r = await wa.createTemplate(def);
               results.push({ name: def.name, ok: true, status: r.status, id: r.id });
+              this.noteTemplateSubmitted(def.name);
             } catch (e) {
               results.push({ name: def.name, error: e.graph?.error_user_msg || e.graph?.message || e.message });
             }
