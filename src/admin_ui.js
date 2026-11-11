@@ -48,14 +48,19 @@ pre{background:var(--tint);border-radius:12px;padding:10px;white-space:pre-wrap;
 .login .tag{font-size:16px;font-weight:700;margin:0 0 4px}.login .tag.en{font:600 13px/1.3 'Outfit',sans-serif;letter-spacing:.04em;color:var(--muted);margin-bottom:8px}.login .slogan{margin:0 0 6px;font-size:14px;color:var(--indigo);font-weight:600}.login .dots{display:flex;justify-content:center;gap:6px;margin:14px 0 0}.login .dots i{width:8px;height:8px;border-radius:50%;display:block}
 `;
 
-export function LOGIN_HTML(message = '') {
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mudaar — دخول</title>${FONTS}<style>${CSS}</style></head>
+export function LOGIN_HTML(message = '', kind = 'owner') {
+  const admin = kind === 'admin';
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mudaar — دخول</title>${FONTS}<style>${CSS}
+.seg{display:flex;background:var(--tint);border-radius:999px;padding:4px;margin:14px 0 6px}.seg button{flex:1;border:none;background:transparent;border-radius:999px;padding:9px 6px;font-size:14px;font-weight:600;color:var(--ink2)}.seg button.on{background:#fff;color:var(--navy);box-shadow:0 1px 4px rgba(16,26,58,.12)}
+.hint{font-size:12px;color:var(--muted);margin:2px 0 0}</style></head>
 <body><div class="login"><div class="card"><div class="logo">${LOGO_V(170)}</div><p class="tag">مُدار - مساعد البيت</p><p class="tag en" dir="ltr">mudaar - Home Assistant</p><p class="slogan">بيتك، مُدار!<span class="muted" style="font-weight:600"> · </span><bdi dir="ltr" style="font-family:'Outfit',sans-serif">Your home, managed!</bdi></p>
+<div class="seg" role="tablist"><button type="button" id="k_owner" class="${admin ? '' : 'on'}" onclick="setKind('owner')">دخول صاحب منزل</button><button type="button" id="k_admin" class="${admin ? 'on' : ''}" onclick="setKind('admin')">دخول مدير النظام</button></div>
 ${message ? `<p class="pill bad" style="display:block;padding:10px">${message}</p>` : ''}
-<form method="post" action="/admin/login"><label>رقم الجوال</label><input type="text" name="phone" inputmode="tel" autocapitalize="none" autocorrect="off" autocomplete="username" dir="ltr" placeholder="05xxxxxxxx"><label>كلمة المرور</label><input type="password" name="password" autocomplete="current-password" dir="ltr"><div class="actions"><button class="btn" type="submit">دخول</button></div></form><div class="dots"><i style="background:var(--navy)"></i><i style="background:var(--mint)"></i><i style="background:var(--indigo)"></i></div></div></div></body></html>`;
+<form method="post" action="/admin/login"><input type="hidden" name="kind" id="kind" value="${admin ? 'admin' : 'owner'}"><label id="l_id">${admin ? 'اسم المستخدم' : 'رقم الجوال'}</label><input type="text" name="phone" id="f_id" inputmode="${admin ? 'text' : 'tel'}" autocapitalize="none" autocorrect="off" autocomplete="username" dir="ltr" placeholder="${admin ? '' : '05xxxxxxxx'}"><label>كلمة المرور</label><input type="password" name="password" autocomplete="current-password" dir="ltr"><div class="actions"><button class="btn" type="submit">دخول</button></div><p class="hint" id="hint">${admin ? 'لمدير منصة مُدار فقط.' : 'ربّ الأسرة يدخل برقم الجوال وكلمة المرور التي ضبطها من رابط الدعوة.'}</p></form><div class="dots"><i style="background:var(--navy)"></i><i style="background:var(--mint)"></i><i style="background:var(--indigo)"></i></div></div></div>
+<script>function setKind(k){var a=k==='admin';document.getElementById('kind').value=k;document.getElementById('k_owner').classList.toggle('on',!a);document.getElementById('k_admin').classList.toggle('on',a);document.getElementById('l_id').textContent=a?'اسم المستخدم':'رقم الجوال';var f=document.getElementById('f_id');f.placeholder=a?'':'05xxxxxxxx';f.setAttribute('inputmode',a?'text':'tel');f.value='';document.getElementById('hint').textContent=a?'لمدير منصة مُدار فقط.':'ربّ الأسرة يدخل برقم الجوال وكلمة المرور التي ضبطها من رابط الدعوة.';f.focus()}</script></body></html>`;
 }
 
-export const UI_VERSION = '2026-11-11.1';
+export const UI_VERSION = '2026-11-11.2';
 const escapeHtml = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 export const ADMIN_HTML = (role = 'owner', opts = {}) => `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mudaar — الإدارة</title>${FONTS}<style>${CSS}</style></head>
 <body>
@@ -169,7 +174,7 @@ async function saveSettings(){const b={};for(const k of ['morning_time','shoppin
 async function addHousehold(){const name=$('#hh_name').value.trim(),owner=$('#hh_owner').value.trim(),phone=$('#hh_phone').value.trim();if(!name||!owner||!phone)return toast('أكمل الاسم وربّ الأسرة والجوال');if(!confirm('إنشاء منزل «'+name+'» لربّ الأسرة '+owner+' ('+phone+')؟'))return;try{const r=await api('households','POST',{name,owner_name:owner,owner_phone:phone});toast('أُنشئ المنزل ✅ أرسل رابط الدعوة');render()}catch(e){toast(e.message)}}
 async function reinvite(id){try{await api('households/'+id+'/invite','POST',{});toast('صدر رابط دعوة جديد');render()}catch(e){toast(e.message)}}
 async function hhStatus(id,st){await api('households/'+id+'/status','POST',{status:st});render()}
-async function delHousehold(id,name){if(confirm('حذف منزل «'+name+'» وحسابات دخوله؟ (بيانات مهامه تبقى مؤرشفة)')){await api('households/'+id,'DELETE');render()}}
+async function delHousehold(id,name){if(confirm('حذف منزل «'+name+'» نهائياً مع حسابات دخوله وكل بياناته؟')){await api('households/'+id,'DELETE');render()}}
 function copyText(t){navigator.clipboard?.writeText(t).then(()=>toast('نُسخ الرابط')).catch(()=>prompt('انسخ الرابط:',t))}
 async function saveFamily(){try{await api('account/family','PUT',{name:$('#f_name').value.trim(),phone:$('#f_phone').value.trim(),password:$('#f_pass').value});toast('تم حفظ الحساب');render()}catch(e){toast(e.message)}}
 async function delFamily(phone){if(confirm('إلغاء حساب هذا الفرد؟')){await api('account/family/'+phone,'DELETE');toast('أُلغي');render()}}

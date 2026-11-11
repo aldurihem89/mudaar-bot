@@ -120,7 +120,7 @@ export default {
         const body = await readBody(request);
         const r = await hub(env).fetch('https://hub.internal/auth/login', { method: 'POST', headers: stdHeaders, body: JSON.stringify(body) });
         const j = await r.json().catch(() => ({}));
-        if (!r.ok || !j.session) return htmlRes(LOGIN_HTML(j.error || 'تعذّر الدخول'), r.status === 500 ? 500 : 401);
+        if (!r.ok || !j.session) return htmlRes(LOGIN_HTML(j.error || 'تعذّر الدخول', body.kind === 'admin' ? 'admin' : 'owner'), r.status === 500 ? 500 : 401);
         return redirect('/admin', { 'Set-Cookie': await makeCookie(env, j.session) });
       }
       if (path === '/admin/logout') return redirect('/admin', { 'Set-Cookie': clearCookie });

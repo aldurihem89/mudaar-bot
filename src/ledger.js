@@ -250,6 +250,13 @@ export class Ledger {
         return json({ ok: true });
       }
       if (path === '/internal/people') return json(this.q(`SELECT name, role, phone FROM people WHERE active = 1`));
+      if (path === '/internal/wipe' && request.method === 'POST') {
+        // household deleted from the Hub: clear everything so nothing lingers or keeps sending
+        if (this.settings().household_id === 'main') return json({ error: 'refusing to wipe platform ledger' }, 400);
+        for (const t of ['instances', 'recurring', 'requests', 'shopping', 'ratings', 'leads', 'seen', 'log', 'people', 'settings']) this.run(`DELETE FROM ${t}`);
+        await this.ctx.storage.deleteAlarm().catch(() => {});
+        return json({ ok: true });
+      }
       if (path === '/internal/bootstrap' && request.method === 'POST') {
         const b = await request.json().catch(() => ({}));
         if (b.household_id) this.setSetting('household_id', b.household_id);

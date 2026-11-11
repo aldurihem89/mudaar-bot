@@ -126,10 +126,12 @@ export class Hub {
     // platform owner: ADMIN_USER (default "admin") or SUPER_PHONE, with ADMIN_PASSWORD
     const superUser = String(env.ADMIN_USER || 'admin').toLowerCase();
     const superPhone = env.SUPER_PHONE ? normalizePhone(env.SUPER_PHONE) : '';
-    if (pw === env.ADMIN_PASSWORD && (id === superUser || (superPhone && normalizePhone(id) === superPhone))) {
+    const kind = body.kind === 'admin' ? 'admin' : body.kind === 'owner' ? 'owner' : '';
+    if (kind !== 'owner' && pw === env.ADMIN_PASSWORD && (id === superUser || (superPhone && normalizePhone(id) === superPhone))) {
       const main = this.q1(`SELECT * FROM households WHERE id = ?`, MAIN);
       return json({ ok: true, session: { h: MAIN, r: 'super', u: id, n: main?.owner_name || 'ربّ البيت', hn: main?.name || 'منزلي' } });
     }
+    if (kind === 'admin') return json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' }, 401);
     const phone = normalizePhone(id);
     const u = phone ? this.q1(`SELECT * FROM users WHERE phone = ?`, phone) : null;
     if (!u || !u.pass_hash) return json({ error: 'الرقم أو كلمة المرور غير صحيحة' }, 401);
@@ -246,6 +248,7 @@ export class Hub {
         this.sql.exec(`DELETE FROM users WHERE household_id = ?`, id);
         this.sql.exec(`DELETE FROM phone_index WHERE household_id = ?`, id);
         this.sql.exec(`DELETE FROM households WHERE id = ?`, id);
+        await this.ledger(id).fetch('https://ledger.internal/internal/wipe', { method: 'POST', headers: { 'x-household': id } }).catch(() => {});
         return json({ ok: true });
       }
       if (id && method === 'GET') {
