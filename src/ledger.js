@@ -1696,13 +1696,20 @@ export class Ledger {
           return json({ ok: true });
         }
         if (method === 'POST' && id === 'test') {
-          const target = body.phone ? { phone: normalizePhone(body.phone) } : this.owners()[0];
-          if (!target) return json({ error: 'لا يوجد رقم' }, 400);
+          // platform console: the platform admin's phone; a house board: the house owner
+          const target = body.phone ? { phone: normalizePhone(body.phone) } : (this.isPlatform && request.headers.get('x-role') === 'super' ? this.platformRecipients()[0] : this.owners()[0]);
+          if (!target) return json({ error: 'لا يوجد رقم — اضبط «جوال مدير المنصة» أولاً' }, 400);
           try {
-            const r = await this.wa.buttons(target.phone, `👋 مرحباً! أنا ${this.botName}. هل تصلك هذه الرسالة؟`, [{ id: 'welcome:ack', title: 'نعم، وصلت' }]);
-            return json({ ok: true, result: r });
+            if (target.id != null && this.canFree(target)) {
+              const r = await this.wa.buttons(target.phone, `👋 مرحباً! أنا ${this.botName}. هل تصلك هذه الرسالة؟`, [{ id: 'welcome:ack', title: 'نعم، وصلت' }]);
+              return json({ ok: true, result: r });
+            }
+            const n = parseInt(this.settings().notice_seq || '1000', 10) + 1;
+            this.setSetting('notice_seq', String(n));
+            const r = await this.wa.template(target.phone, 'request_update', [String(n), `رسالة تجريبية من مُدار — الربط مع واتساب يعمل ✅ (${T.timeStr(this.now())})`]);
+            return json({ ok: true, template: true, result: r });
           } catch (e) {
-            return json({ error: e.message, graph: e.graph }, 500);
+            return json({ error: e.graph?.error_user_msg || e.graph?.message || e.message, graph: e.graph }, 500);
           }
         }
         break;

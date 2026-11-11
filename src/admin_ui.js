@@ -60,7 +60,7 @@ ${message ? `<p class="pill bad" style="display:block;padding:10px">${message}</
 <script>function setKind(k){var a=k==='admin';document.getElementById('kind').value=k;document.getElementById('k_owner').classList.toggle('on',!a);document.getElementById('k_admin').classList.toggle('on',a);document.getElementById('l_id').textContent=a?'اسم المستخدم':'رقم الجوال';var f=document.getElementById('f_id');f.placeholder=a?'':'05xxxxxxxx';f.setAttribute('inputmode',a?'text':'tel');f.value='';document.getElementById('hint').textContent=a?'لمدير منصة مُدار فقط.':'ربّ الأسرة يدخل برقم الجوال وكلمة المرور التي ضبطها من رابط الدعوة.';f.focus()}</script></body></html>`;
 }
 
-export const UI_VERSION = '2026-11-11.7';
+export const UI_VERSION = '2026-11-11.8';
 const escapeHtml = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 export const ADMIN_HTML = (role = 'owner', opts = {}) => `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mudaar — الإدارة</title>${FONTS}<style>${CSS}</style></head>
 <body>
@@ -111,8 +111,8 @@ const VIEWS={
   h+='<div class="card"><h2>4) تفعيل الرقم على واجهة البرمجة</h2><p class="muted">مرة واحدة فقط. اختر رمز تحقق بخطوتين من 6 أرقام واحفظه في ملاحظتك؛ هذا الأمر يثبّته ويفعّل الرقم.</p><label>رمز من 6 أرقام</label><input id="pin" inputmode="numeric" maxlength="6" placeholder="123456"><div class="actions"><button class="btn" onclick="registerNumber()">تفعيل الرقم</button></div></div>';
   h+='<div class="card"><h2>5) اشتراك التطبيق في حساب واتساب</h2><p class="muted">يخبر Meta أن تُرسل رسائل هذا الحساب إلى هذا البوت.</p><div class="actions"><button class="btn" onclick="setupAct(\\'subscribe\\')">اشتراك</button></div></div>';
   h+='<div class="card"><h2>6) القوالب (للرسائل خارج نافذة 24 ساعة)</h2><div id="tpl" class="muted">—</div><div class="actions"><button class="btn" onclick="setupAct(\\'templates\\')">إنشاء القوالب الناقصة</button></div></div>';
-  h+='<div class="card"><h2>7) تجربة</h2><p class="muted">يرسل رسالة بأزرار إلى ربّ البيت (أضفه أولاً في «الأشخاص»).</p><div class="actions"><button class="btn" onclick="sendTest()">أرسل رسالة تجريبية</button><button class="btn sec" onclick="runCron()">تشغيل دورة الفحص الآن</button><button class="btn sec" onclick="sendMorning()">إرسال قائمة الصباح الآن</button></div></div>';
-  h+='<div class="card"><div class="kpi"><div><b>'+o.counts.people+'</b><span>أشخاص</span></div><div><b>'+o.counts.recurring+'</b><span>مهام دورية</span></div><div><b>'+o.counts.today_done+'/'+o.counts.today_instances+'</b><span>مهام اليوم</span></div></div><p class="muted" style="margin-top:8px">الوقت الآن بتوقيت الرياض: '+o.now+' · التاريخ: '+o.today+'</p></div>';
+  h+='<div class="card"><h2>7) تجربة الاتصال</h2><p class="muted">يرسل رسالة تجريبية إلى «جوال مدير المنصة» (اضبطه في بطاقة إشعارات المنصة أعلاه) للتأكد أن الربط مع واتساب يعمل.</p><div class="actions"><button class="btn" onclick="sendTest()">أرسل رسالة تجريبية</button></div></div>';
+  h+='<p class="muted" style="text-align:center">الوقت الآن بتوقيت الرياض: '+o.now+' · التاريخ: '+o.today+'</p>';
   $('#main').innerHTML=h;checkStatus();
  },
  async today(){
@@ -196,7 +196,7 @@ async function setupAct(a){try{const r=await api('setup/'+a,'POST',{});toast('ت
 async function savePlatformPhone(){const v=$('#pf_phone').value.trim();if(v&&v.replace(/\\D/g,'').length<9)return toast('الرقم قصير');try{await api('settings','PUT',{platform_phone:v});toast('تم الحفظ ✅')}catch(e){toast(e.message)}}
 async function setDisplayName(){const name=$('#dn').value.trim();if(!confirm('طلب تغيير اسم العرض إلى:\\n'+name))return;try{const r=await api('setup/display_name','POST',{name});toast('أُرسل الطلب إلى Meta ✅');console.log(r);checkStatus()}catch(e){alert('ردّ Meta: '+e.message)}}
 async function registerNumber(){const pin=$('#pin').value.trim();if(!/^\\d{6}$/.test(pin))return toast('أدخل 6 أرقام');try{await api('setup/register','POST',{pin});toast('تم تفعيل الرقم ✅ احفظ الرمز في ملاحظتك');checkStatus()}catch(e){toast(e.message)}}
-async function sendTest(){try{await api('send/test','POST',{});toast('أُرسلت، تحقق من واتساب')}catch(e){toast(e.message)}}
+async function sendTest(){try{const r=await api('send/test','POST',{});toast(r.template?'أُرسلت كقالب (خارج نافذة 24 ساعة) — تحقق من واتساب':'أُرسلت، تحقق من واتساب')}catch(e){toast(e.message)}}
 async function runCron(){await api('cron','POST',{});toast('نُفّذت دورة الفحص')}
 async function sendMorning(){try{const r=await api('send/morning','POST',{});toast('أُرسلت '+r.sent+' مهمة')}catch(e){toast(e.message)}}
 render();
