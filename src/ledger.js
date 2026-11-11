@@ -243,8 +243,25 @@ export class Ledger {
         return json({ ok: true });
       }
       if (path === '/interest' && request.method === 'POST') return this.webInterest(request, url);
+      const hid = request.headers.get('x-household');
+      if (hid && hid !== this.settings().household_id) this.setSetting('household_id', hid);
       if (path === '/cron') {
         await this.cron();
+        return json({ ok: true });
+      }
+      if (path === '/internal/people') return json(this.q(`SELECT name, role, phone FROM people WHERE active = 1`));
+      if (path === '/internal/bootstrap' && request.method === 'POST') {
+        const b = await request.json().catch(() => ({}));
+        if (b.household_id) this.setSetting('household_id', b.household_id);
+        if (b.household_name) this.setSetting('household_name', b.household_name);
+        const po0 = request.headers.get('x-public-origin');
+        if (po0) this.setSetting('public_origin', po0);
+        const phone = normalizePhone(b.owner_phone || '');
+        if (phone && b.owner_name) {
+          this.run(`INSERT INTO people(name, role, phone, lang, gets_summary, active, created_at) VALUES (?, 'owner', ?, 'ar', 1, 1, ?)
+                    ON CONFLICT(phone) DO UPDATE SET name = excluded.name, role = 'owner', active = 1, gets_summary = 1`, b.owner_name, phone, T.isoNow());
+        }
+        this.log('info', 'household bootstrapped', { name: b.household_name });
         return json({ ok: true });
       }
       const po = request.headers.get('x-public-origin');
@@ -924,7 +941,7 @@ export class Ledger {
     }
 
     // 7. Template approval watch: every 30 min until all approved; tells the owner when done (or if one is rejected)
-    if (s.templates_watch !== 'done' && T.hoursSince(s.templates_checked_at || null) * 60 >= 29) {
+    if (this.isPlatform && s.templates_watch !== 'done' && T.hoursSince(s.templates_checked_at || null) * 60 >= 29) {
       await this.watchTemplates().catch((e) => this.log('warn', 'template watch failed', { error: e.message }));
     }
   }
@@ -1186,52 +1203,41 @@ export class Ledger {
   }
 
   // ---------- admin ----------
-  // Two accounts: the owner (ADMIN_USER, default "admin", + ADMIN_PASSWORD from Cloudflare) with full access,
-  // and an optional family account (set by the owner in Settings) that can only view today's board, tasks and requests.
+  // Authentication happens in the Worker (signed cookie, verified against the Hub). The Worker forwards the
+  // verified identity in headers: x-role (super|owner|family), x-household, x-user, x-user-name, x-household-name.
   async admin(request, url) {
     const path = url.pathname;
     const origin = request.headers.get('x-public-origin') || url.origin;
     if (origin && origin !== this.settings().public_origin) this.setSetting('public_origin', origin);
-    const role = await this.sessionRole(request);
-
-    if (path === '/admin/login' && request.method === 'POST') {
-      const ct = request.headers.get('content-type') || '';
-      let user = '', pw = '';
-      if (ct.includes('json')) {
-        const j = await request.json().catch(() => ({}));
-        user = j.username || ''; pw = j.password || '';
-      } else {
-        const fd = await request.formData().catch(() => null);
-        user = fd?.get('username') || ''; pw = fd?.get('password') || '';
-      }
-      user = String(user).trim().toLowerCase();
-      if (!this.env.ADMIN_PASSWORD) return html(LOGIN_HTML('لم يُضبط ADMIN_PASSWORD في إعدادات Worker بعد.'), 500);
-      const r = await this.checkLogin(user, String(pw));
-      if (!r) {
-        this.log('warn', 'admin login failed', { user });
-        return html(LOGIN_HTML('اسم المستخدم أو كلمة المرور غير صحيحة.'), 401);
-      }
-      const cookie = await this.sessionCookie(r);
-      return new Response(null, { status: 302, headers: { Location: '/admin', 'Set-Cookie': `mb=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000` } });
+    const role = request.headers.get('x-role') || '';
+    if (!['super', 'owner', 'family'].includes(role)) return json({ error: 'unauthorized' }, 401);
+    this.rememberHousehold(request);
+    if (path === '/admin' || path === '/admin/') {
+      const hn = decodeURIComponent(request.headers.get('x-household-name') || '') || this.settings().household_name || 'منزلي';
+      const un = decodeURIComponent(request.headers.get('x-user-name') || '');
+      return html(ADMIN_HTML(role, { household: hn, user: un, impersonating: request.headers.get('x-impersonating') === '1', platform: this.isPlatform }));
     }
-    if (path === '/admin/logout') {
-      return new Response(null, { status: 302, headers: { Location: '/admin', 'Set-Cookie': 'mb=; Path=/; Max-Age=0' } });
-    }
-    if (!role) {
-      if (path.startsWith('/admin/api')) return json({ error: 'unauthorized' }, 401);
-      return html(LOGIN_HTML(this.env.ADMIN_PASSWORD ? '' : 'لم يُضبط ADMIN_PASSWORD في إعدادات Worker بعد.'));
-    }
-    if (path === '/admin' || path === '/admin/') return html(ADMIN_HTML(role));
     if (path.startsWith('/admin/api/')) {
       const route = path.slice('/admin/api/'.length);
-      if (role !== 'owner' && !this.familyAllowed(request.method, route)) return json({ error: 'هذه الصلاحية لربّ البيت فقط' }, 403);
-      return this.adminApi(request, url, route, origin, role);
+      const isOwner = role === 'owner' || role === 'super';
+      if (!isOwner && !this.familyAllowed(request.method, route)) return json({ error: 'هذه الصلاحية لربّ البيت فقط' }, 403);
+      if (route.split('/')[0] === 'setup' && !this.isPlatform) return json({ error: 'إعداد المنصة متاح لمدير مُدار فقط' }, 403);
+      return this.adminApi(request, url, route, origin, isOwner ? 'owner' : 'family');
     }
     return new Response('not found', { status: 404 });
   }
 
-  ownerUser() {
-    return String(this.env.ADMIN_USER || 'admin').trim().toLowerCase();
+  rememberHousehold(request) {
+    const hid = request.headers.get('x-household');
+    if (hid && hid !== this.settings().household_id) this.setSetting('household_id', hid);
+    const hn = decodeURIComponent(request.headers.get('x-household-name') || '');
+    if (hn && hn !== this.settings().household_name) this.setSetting('household_name', hn);
+  }
+  get householdId() {
+    return this.settings().household_id || 'main';
+  }
+  get isPlatform() {
+    return this.householdId === 'main';
   }
   familyAllowed(method, route) {
     if (method !== 'GET') return false;
@@ -1242,31 +1248,19 @@ export class Ledger {
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
     return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
   }
-  // returns 'owner' | 'family' | null
-  async checkLogin(user, pw) {
-    if (user === this.ownerUser() && pw === this.env.ADMIN_PASSWORD) return 'owner';
-    const s = this.settings();
-    if (s.family_user && s.family_pass && user === String(s.family_user).toLowerCase()) {
-      const h = await this.sha(`mudaar-family:${s.family_salt || ''}:${pw}`);
-      if (h === s.family_pass) return 'family';
-    }
-    return null;
+  // Phone index at the Hub: a WhatsApp number belongs to exactly one household.
+  async hubClaim(phone) {
+    if (!this.env.HUB) return { ok: true };
+    const r = await this.env.HUB.get(this.env.HUB.idFromName('hub')).fetch('https://hub.internal/phone/claim', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone, household: this.householdId }),
+    });
+    return r.ok ? { ok: true } : { ok: false, error: (await r.json().catch(() => ({}))).error || 'الرقم مستخدم في منزل آخر' };
   }
-  roleCredential(role) {
-    return role === 'owner' ? this.env.ADMIN_PASSWORD : (this.settings().family_pass || '');
-  }
-  async sessionCookie(role) {
-    const cred = this.roleCredential(role);
-    if (!cred) return '';
-    return `${role}.${await this.sha(`mudaar-session:${role}:${cred}`)}`;
-  }
-  async sessionRole(request) {
-    if (!this.env.ADMIN_PASSWORD) return null;
-    const cookie = request.headers.get('cookie') || '';
-    const m = cookie.match(/(?:^|;\s*)mb=(owner|family)\.([a-f0-9]+)/);
-    if (!m) return null;
-    const expected = await this.sessionCookie(m[1]);
-    return expected && `${m[1]}.${m[2]}` === expected ? m[1] : null;
+  async hubRelease(phone) {
+    if (!this.env.HUB) return;
+    await this.env.HUB.get(this.env.HUB.idFromName('hub')).fetch('https://hub.internal/phone/release', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone, household: this.householdId }),
+    }).catch(() => {});
   }
 
   async adminApi(request, url, route, origin, role = 'owner') {
@@ -1283,35 +1277,12 @@ export class Ledger {
     const [res, id, sub] = route.split('/');
 
     switch (res) {
-      case 'me':
-        return json({ role, user: role === 'owner' ? this.ownerUser() : this.settings().family_user || '' });
 
-      case 'account': {
-        // owner only (enforced by familyAllowed): manage the family (view-only) account
-        if (id === 'family' && method === 'PUT') {
-          const user = String(body.username || '').trim().toLowerCase();
-          const pw = String(body.password || '');
-          if (!/^[a-z0-9._-]{3,32}$/.test(user)) return json({ error: 'اسم المستخدم: 3–32 حرفاً لاتينياً أو أرقاماً' }, 400);
-          if (user === this.ownerUser()) return json({ error: 'هذا اسم المستخدم الرئيسي' }, 400);
-          if (pw.length < 6) return json({ error: 'كلمة المرور 6 أحرف على الأقل' }, 400);
-          const salt = crypto.randomUUID();
-          this.setSetting('family_user', user);
-          this.setSetting('family_salt', salt);
-          this.setSetting('family_pass', await this.sha(`mudaar-family:${salt}:${pw}`));
-          this.log('info', 'family account set', { user });
-          return json({ ok: true, user });
-        }
-        if (id === 'family' && method === 'DELETE') {
-          for (const k of ['family_user', 'family_salt', 'family_pass']) this.setSetting(k, '');
-          return json({ ok: true });
-        }
-        break;
-      }
 
       case 'overview': {
         const s = this.settings();
         const today = this.today();
-        if (role !== 'owner') {
+        if (role !== 'owner' || !this.isPlatform) {
           return json({
             today,
             now: T.timeStr(this.now()),
@@ -1351,6 +1322,8 @@ export class Ledger {
             if (!phone || phone.length < 9) return json({ error: 'رقم واتساب غير صالح' }, 400);
             return json({ error: 'الدور غير صالح' }, 400);
           }
+          const claim = await this.hubClaim(phone);
+          if (!claim.ok) return json({ error: claim.error }, 409);
           const existing = this.q1(`SELECT id, name, active FROM people WHERE phone = ?`, phone);
           const newId = this.run(
             `INSERT INTO people(name, role, phone, lang, gets_summary, active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)
@@ -1382,7 +1355,9 @@ export class Ledger {
           return json({ ok: true });
         }
         if (method === 'DELETE' && id) {
+          const prow = this.q1(`SELECT phone FROM people WHERE id = ?`, id);
           this.sql.exec(`UPDATE people SET active = 0 WHERE id = ?`, id);
+          if (prow) await this.hubRelease(prow.phone);
           return json({ ok: true });
         }
         break;
@@ -1494,7 +1469,7 @@ export class Ledger {
       case 'settings':
         if (method === 'GET') {
           const { family_pass, family_salt, ...rest } = this.settings();
-          return json({ ...rest, family_user: rest.family_user || '', owner_user: this.ownerUser() });
+          return json({ ...rest, household_id: this.householdId, platform: this.isPlatform });
         }
         if (method === 'PUT') {
           for (const [k, v] of Object.entries(body)) if (k in DEFAULT_SETTINGS && !k.startsWith('last_')) this.setSetting(k, v);
