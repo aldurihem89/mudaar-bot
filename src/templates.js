@@ -119,6 +119,20 @@ export const TEMPLATES = [
       },
     ],
   },
+  {
+    // Onboarding opener for a person added to a house who has never messaged the bot (account-setup notice).
+    name: 'welcome_setup',
+    language: 'ar',
+    category: 'UTILITY',
+    components: [
+      {
+        type: 'BODY',
+        text: 'مرحباً {{1}} 👋\nتم إعداد حسابك في مُدار - مساعد البيت ضمن منزل «{{2}}».\nستصلك هنا مهام البيت وطلباته، وتردّ عليها بضغطة زر.\nهل وصلتك هذه الرسالة؟',
+        example: { body_text: [['عبدالرحمن', 'بيت أبو خالد']] },
+      },
+      { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'نعم، وصلت' }] },
+    ],
+  },
 ];
 
 export const TEMPLATE_NAMES = TEMPLATES.map((t) => t.name);

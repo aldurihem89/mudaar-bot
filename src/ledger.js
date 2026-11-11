@@ -1038,11 +1038,16 @@ export class Ledger {
     }
 
     // 7. Template approval watch: every 30 min until all approved; tells the owner when done (or if one is rejected)
-    if (this.isPlatform && s.templates_watch !== 'done' && T.hoursSince(s.templates_checked_at || null) * 60 >= 29) {
+    if (this.isPlatform && (s.templates_watch !== 'done' || this.unsubmittedTemplates().length) && T.hoursSince(s.templates_checked_at || null) * 60 >= 29) {
       await this.watchTemplates().catch((e) => this.log('warn', 'template watch failed', { error: e.message }));
     }
   }
 
+  unsubmittedTemplates() {
+    let m = {};
+    try { m = JSON.parse(this.settings().templates_submitted || '{}'); } catch (e) { m = {}; }
+    return TEMPLATE_NAMES.filter((n) => !m[n]);
+  }
   noteTemplateSubmitted(name) {
     let m = {};
     try { m = JSON.parse(this.settings().templates_submitted || '{}'); } catch (e) { m = {}; }
@@ -1088,9 +1093,31 @@ export class Ledger {
   async watchTemplates() {
     this.setSetting('templates_checked_at', T.isoNow());
     const all = (await this.wa.listTemplates()).data || [];
-    const mine = TEMPLATE_NAMES.map((n) => ({ name: n, t: all.find((x) => x.name === n && x.language === 'ar') }));
+    let mine = TEMPLATE_NAMES.map((n) => ({ name: n, t: all.find((x) => x.name === n && x.language === 'ar') }));
+    // templates that exist in Meta but were never recorded here (created before the watcher): record them now
+    for (const x of mine) if (x.t && this.unsubmittedTemplates().includes(x.name)) this.noteTemplateSubmitted(x.name);
+    // templates defined in code but not yet created in Meta (a newly added template): create them now
     const missing = mine.filter((m) => !m.t);
-    if (missing.length) return; // not created yet; nothing to watch
+    if (missing.length) {
+      const created = [];
+      for (const m of missing) {
+        const def = TEMPLATES.find((d) => d.name === m.name);
+        try {
+          const r = await this.wa.createTemplate(def);
+          this.noteTemplateSubmitted(m.name);
+          m.t = { name: m.name, language: 'ar', status: r.status || 'PENDING', id: r.id };
+          created.push(m.name);
+        } catch (e) {
+          this.noteTemplateSubmitted(m.name); // don't retry every half hour; the setup page shows the error
+          this.log('warn', 'template auto-create failed', { name: m.name, error: e.graph?.error_user_msg || e.graph?.message || e.message });
+        }
+      }
+      if (created.length) {
+        this.setSetting('templates_watch', '');
+        await this.notifyPlatform(`📨 أُرسل للمراجعة ${created.length === 1 ? 'قالب جديد' : created.length + ' قوالب جديدة'}: ${created.join('، ')}. سأبلغك عند الاعتماد.`, 'القوالب');
+      }
+      mine = mine.filter((m) => m.t);
+    }
     await this.resubmitStuckTemplates(mine);
     const rejected = mine.filter((m) => m.t.status === 'REJECTED');
     const approved = mine.filter((m) => m.t.status === 'APPROVED');
@@ -1101,9 +1128,9 @@ export class Ledger {
       await this.notifyPlatform(`⚠️ رفضت Meta ${rejected.length} من القوالب:\n${lines}\nسيعاد ضبط صياغتها وإرسالها.`, 'القوالب');
       this.log('warn', 'templates rejected', { names: rejected.map((r) => r.name) });
     }
-    if (approved.length === mine.length) {
+    if (approved.length === TEMPLATE_NAMES.length && this.settings().templates_watch !== 'done') {
       this.setSetting('templates_watch', 'done');
-      await this.notifyPlatform(`✅ اعتُمدت القوالب السبعة. يمكن الآن مراسلة أي شخص تضيفه حتى لو لم يراسل البوت من قبل — أضف العاملة والسائق متى شئت.`, 'القوالب');
+      await this.notifyPlatform(`✅ اعتُمدت القوالب كلها (${approved.length}). يمكن الآن مراسلة أي شخص تضيفه حتى لو لم يراسل البوت من قبل.`, 'القوالب');
       this.log('info', 'templates all approved');
     }
   }
@@ -1450,6 +1477,17 @@ export class Ledger {
             await this.sendWelcome(p);
             return json({ ok: true, sent: true });
           }
+          // outside the 24h window: the approved onboarding template opens the conversation;
+          // «نعم، وصلت» (payload welcome:ack) then continues with the language choice, the video and the contact card
+          try {
+            const first = (p.name || '').split(' ')[0] || p.name;
+            await this.wa.template(p.phone, 'welcome_setup', [first, this.settings().household_name || 'منزلي'], ['welcome:ack']);
+            this.sql.exec(`UPDATE people SET welcome_pending = 0, welcomed_at = ? WHERE id = ?`, T.isoNow(), id);
+            this.log('info', 'welcome template sent', { to: p.name });
+            return json({ ok: true, sent: true, template: true });
+          } catch (e) {
+            this.log('warn', 'welcome template unavailable; deferred to first message', { error: e.graph?.message || e.message });
+          }
           this.sql.exec(`UPDATE people SET welcome_pending = 1 WHERE id = ?`, id);
           return json({ ok: true, sent: false, pending: true });
         }
@@ -1736,6 +1774,7 @@ export class Ledger {
               const r = await wa.createTemplate(def);
               results.push({ name: def.name, ok: true, status: r.status, id: r.id });
               this.noteTemplateSubmitted(def.name);
+              this.setSetting('templates_watch', '');
             } catch (e) {
               results.push({ name: def.name, error: e.graph?.error_user_msg || e.graph?.message || e.message });
             }
