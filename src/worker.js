@@ -161,6 +161,14 @@ export default {
         return new Response(await r.text(), { status: r.status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
       }
 
+      // the platform console (super, no household open) only reaches platform-level routes of the platform ledger;
+      // house data is reached by opening a household's board (/admin/switch/:id)
+      if (session.r === 'super' && path.startsWith('/admin/api/')) {
+        const route = path.slice('/admin/api/'.length);
+        const head = route.split('/')[0];
+        const allowed = ['setup', 'leads', 'log', 'settings', 'overview', 'cron'].includes(head) || route === 'export/leads' || route === 'send/test';
+        if (!allowed) return jsonRes({ error: 'هذه بيانات منزل — افتح لوحة المنزل من «المنازل» أولاً' }, 403);
+      }
       const body = ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer();
       return ledger(env, session.h).fetch(new Request(request.url, { method: request.method, headers: fwdHeaders, body, redirect: 'manual' }));
     }
