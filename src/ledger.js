@@ -50,6 +50,7 @@ const DEFAULT_SETTINGS = {
   quiet_end: '07:00',
   default_deadline_hours: '4',
   default_remind_hours: '2',
+  platform_phone: '',
   last_create_date: '',
   last_shopping_date: '',
   last_summary_date: '',
@@ -329,7 +330,7 @@ export class Ledger {
       key, name, note, note, interest, now, now, city, email, staff, note, ip);
     this.log('info', 'web interest', { name, city, phone: Boolean(phone), email: Boolean(email) });
     const lines = [`📝 اهتمام جديد من الموقع`, `الاسم: ${name}`, city ? `المدينة: ${city}` : '', phone ? `الجوال: +${phone}` : '', email ? `البريد: ${email}` : '', staff, interest ? `الأهم له: ${interest}` : '', note ? `ملاحظة: ${note}` : ''].filter(Boolean);
-    await this.notifyHousehold(lines.join('\n'), 'نموذج الاهتمام').catch(() => {});
+    await this.notifyPlatform(lines.join('\n'), 'نموذج الاهتمام').catch(() => {});
     return json({ ok: true });
   }
 
@@ -353,7 +354,7 @@ export class Ledger {
       await this.wa.text(from, action === 'lead:trial'
         ? 'رائع 🙌 سجّلنا اهتمامك بتجربة مُدار لبيتك. سيتواصل معك فريق مُدار على هذا الرقم خلال أيام.\nGreat — we noted your interest in trying mudaar; we will reach out on this number within days.'
         : 'تمام 👍 اكتب استفسارك هنا وسيصل إلى فريق مُدار ويُردّ عليك على هذا الرقم.\nSure — type your question here and the mudaar team will reply on this number.');
-      await this.notifyHousehold(`👤 مهتم بمُدار (${interest}): +${from}${fresh.name ? ' · ' + fresh.name : ''}`, 'زائر الموقع');
+      await this.notifyPlatform(`👤 مهتم بمُدار (${interest}): +${from}${fresh.name ? ' · ' + fresh.name : ''}`, 'زائر الموقع');
       return;
     }
     // first contact (or after a quiet day): brand welcome with two buttons; later messages are relayed to the owner
@@ -366,7 +367,7 @@ export class Ledger {
       this.log('info', 'visitor welcomed', { from, name });
     }
     if (text && fresh.messages > 1) {
-      await this.notifyHousehold(`💬 زائر الموقع +${from}${fresh.name ? ' (' + fresh.name + ')' : ''}: ${text}`, 'زائر الموقع');
+      await this.notifyPlatform(`💬 زائر الموقع +${from}${fresh.name ? ' (' + fresh.name + ')' : ''}: ${text}`, 'زائر الموقع');
     } else if (!text && !action) {
       this.log('info', 'visitor non-text message', { from, type: msg.type });
     }
@@ -508,6 +509,11 @@ export class Ledger {
     if (state?.kind === 'rec_confirm') {
       // user typed corrections instead of pressing buttons: re-parse
       return this.proposeRecurring(p, text);
+    }
+
+    // Greetings get a greeting, not «لمن هذا الطلب؟»
+    if (/^(السلام عليكم|سلام عليكم|سلام|وعليكم السلام|مرحبا|مرحبًا|هلا|اهلا|أهلا|هاي|صباح الخير|مساء الخير|hi|hello|hey)( ورحمة الله( وبركاته)?)?[!.]?$/i.test(norm)) {
+      return wa.text(p.phone, `${/سلام/.test(norm) ? 'وعليكم السلام' : 'أهلاً'} ${p.name} 👋 أنا ${this.botName}. اكتب أي طلب وسأسألك لمن هو، أو اكتب «مساعدة» لعرض الاختصارات.`);
     }
 
     // Default: a request. Ask who it is for.
@@ -717,6 +723,19 @@ export class Ledger {
   }
   async notifyHousehold(text, subject, mediaId) {
     for (const o of this.owners()) await this.safeNotify(o, text, subject, mediaId);
+  }
+  // Platform notices (templates, leads, website visitors): the platform admin's phone only.
+  // Order: settings.platform_phone → env.SUPER_PHONE → the house owner(s) of this ledger (role owner only, never family).
+  platformRecipients() {
+    const ph = normalizePhone(this.settings().platform_phone || '') || normalizePhone(this.env.SUPER_PHONE || '');
+    if (ph) {
+      const known = this.q1(`SELECT * FROM people WHERE phone = ? AND active = 1`, ph);
+      return [known || { id: 0, name: 'مدير مُدار', role: 'owner', phone: ph, lang: 'ar' }];
+    }
+    return this.q(`SELECT * FROM people WHERE role = 'owner' AND active = 1 ORDER BY id`);
+  }
+  async notifyPlatform(text, subject, mediaId) {
+    for (const o of this.platformRecipients()) await this.safeNotify(o, text, subject, mediaId);
   }
 
   // ---------- shopping ----------
@@ -990,7 +1009,7 @@ export class Ledger {
     this.setSetting('templates_resubmitted', JSON.stringify(done));
     if (names.length) {
       this.log('info', 'templates resubmitted', { names });
-      for (const o of this.owners()) await this.safeNotify(o, `🔁 أعدت إرسال ${names.length} قوالب بقيت قيد المراجعة أكثر من 26 ساعة: ${names.join('، ')}. سأبلغك عند اعتمادها.`, 'القوالب');
+      await this.notifyPlatform(`🔁 أعدت إرسال ${names.length} قوالب بقيت قيد المراجعة أكثر من 26 ساعة: ${names.join('، ')}. سأبلغك عند اعتمادها.`, 'القوالب');
     }
     return names;
   }
@@ -1008,12 +1027,12 @@ export class Ledger {
     if (rejected.length && rejected.map((r) => r.name).join(',') !== lastRejected) {
       this.setSetting('templates_rejected_notified', rejected.map((r) => r.name).join(','));
       const lines = rejected.map((r) => `• ${r.name}: ${r.t.rejected_reason || 'بدون سبب'}`).join('\n');
-      for (const o of this.owners()) await this.safeNotify(o, `⚠️ رفضت Meta ${rejected.length} من القوالب:\n${lines}\nسيعاد ضبط صياغتها وإرسالها.`, 'القوالب');
+      await this.notifyPlatform(`⚠️ رفضت Meta ${rejected.length} من القوالب:\n${lines}\nسيعاد ضبط صياغتها وإرسالها.`, 'القوالب');
       this.log('warn', 'templates rejected', { names: rejected.map((r) => r.name) });
     }
     if (approved.length === mine.length) {
       this.setSetting('templates_watch', 'done');
-      for (const o of this.owners()) await this.safeNotify(o, `✅ اعتُمدت القوالب السبعة. يمكن الآن مراسلة أي شخص تضيفه حتى لو لم يراسل البوت من قبل — أضف العاملة والسائق متى شئت.`, 'القوالب');
+      await this.notifyPlatform(`✅ اعتُمدت القوالب السبعة. يمكن الآن مراسلة أي شخص تضيفه حتى لو لم يراسل البوت من قبل — أضف العاملة والسائق متى شئت.`, 'القوالب');
       this.log('info', 'templates all approved');
     }
   }
