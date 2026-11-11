@@ -941,7 +941,12 @@ export class Ledger {
     let m = {}, done = {};
     try { m = JSON.parse(this.settings().templates_submitted || '{}'); } catch (e) { m = {}; }
     try { done = JSON.parse(this.settings().templates_resubmitted || '{}'); } catch (e) { done = {}; }
-    const stuck = mine.filter((x) => x.t && x.t.status === 'PENDING' && T.hoursSince(m[x.name] || null) > 26 && !done[x.name]);
+    // Submission times known from the first rollout (before this bookkeeping existed); unknown names count from first sight.
+    const SEED = { task_assigned: '2026-11-10T16:06:00Z', task_followup: '2026-11-10T16:06:00Z', request_update: '2026-11-10T16:32:00Z' };
+    let changed = false;
+    for (const x of mine) if (!m[x.name]) { m[x.name] = SEED[x.name] || T.isoNow(); changed = true; }
+    if (changed) this.setSetting('templates_submitted', JSON.stringify(m));
+    const stuck = mine.filter((x) => x.t && x.t.status === 'PENDING' && T.hoursSince(m[x.name]) > 26 && !done[x.name]);
     if (!stuck.length) return [];
     const names = [];
     for (const x of stuck) {
