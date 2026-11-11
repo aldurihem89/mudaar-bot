@@ -55,7 +55,7 @@ export class Hub {
   // the platform owner's own house behaves like any other household: its owner has a login row (phone + password via invite)
   ensureMainOwner() {
     const hh = this.q1(`SELECT * FROM households WHERE id = ?`, MAIN);
-    if (!hh || !hh.owner_phone) return;
+    if (!hh || !hh.owner_phone || hh.status === 'deleted') return;
     if (this.q1(`SELECT 1 FROM users WHERE household_id = ? AND role = 'owner'`, MAIN)) return;
     if (this.q1(`SELECT 1 FROM users WHERE phone = ?`, hh.owner_phone)) return;
     this.sql.exec(`INSERT INTO users(phone, household_id, role, name, created_at) VALUES (?, ?, 'owner', ?, ?)`, hh.owner_phone, MAIN, hh.owner_name || '', now());
@@ -111,7 +111,7 @@ export class Hub {
       if (path.startsWith('/invite/')) return this.invite(path.slice('/invite/'.length), method, body, origin);
       // ----- cron fan-out -----
       if (path === '/cron' && method === 'POST') {
-        const hhs = this.q(`SELECT id FROM households WHERE status = 'active'`);
+        const hhs = this.q(`SELECT id FROM households WHERE status = 'active' OR id = 'main'`);
         const results = [];
         for (const h of hhs) {
           try {
@@ -210,8 +210,8 @@ export class Hub {
     if (res === 'households') {
       if (!isSuper) return json({ error: 'لمدير المنصة فقط' }, 403);
       if (method === 'GET' && !id) {
-        if (!this.q1(`SELECT 1 FROM households WHERE id = ? AND owner_phone != ''`, MAIN)) { await this.importMainPeople(); this.ensureMainOwner(); }
-        const list = this.q(`SELECT * FROM households ORDER BY CASE id WHEN 'main' THEN 0 ELSE 1 END, created_at DESC`);
+        if (!this.q1(`SELECT 1 FROM households WHERE id = ? AND (owner_phone != '' OR status = 'deleted')`, MAIN)) { await this.importMainPeople(); this.ensureMainOwner(); }
+        const list = this.q(`SELECT * FROM households WHERE status != 'deleted' ORDER BY CASE id WHEN 'main' THEN 0 ELSE 1 END, created_at DESC`);
         return json(list.map((h) => {
           const owner = this.q1(`SELECT phone, name, pass_hash, invite_token, invite_expires, last_login_at FROM users WHERE household_id = ? AND role = 'owner'`, h.id);
           const phones = this.q1(`SELECT COUNT(*) AS n FROM phone_index WHERE household_id = ?`, h.id).n;
@@ -255,6 +255,7 @@ export class Hub {
       }
       if (id && method === 'PUT') {
         if (id === MAIN && body.owner_phone) {
+          this.sql.exec(`UPDATE households SET status = 'active' WHERE id = ? AND status = 'deleted'`, MAIN);
           const ph = normalizePhone(body.owner_phone);
           if (!ph || ph.length < 9) return json({ error: 'رقم الجوال غير صالح' }, 400);
           const taken = this.q1(`SELECT household_id FROM users WHERE phone = ?`, ph);
@@ -269,15 +270,19 @@ export class Hub {
         return json({ ok: true });
       }
       if (id && method === 'DELETE') {
-        if (id === MAIN) return json({ error: 'لا يمكن حذف منزل المنصة' }, 400);
         this.sql.exec(`DELETE FROM users WHERE household_id = ?`, id);
         this.sql.exec(`DELETE FROM phone_index WHERE household_id = ?`, id);
-        this.sql.exec(`DELETE FROM households WHERE id = ?`, id);
+        if (id === MAIN) {
+          // the platform owner's own house: wipe its house data, hide it; the platform itself (templates, leads, admin phone) stays
+          this.sql.exec(`UPDATE households SET status = 'deleted', owner_name = '', owner_phone = '', name = 'منزلي' WHERE id = ?`, MAIN);
+        } else {
+          this.sql.exec(`DELETE FROM households WHERE id = ?`, id);
+        }
         await this.ledger(id).fetch('https://ledger.internal/internal/wipe', { method: 'POST', headers: { 'x-household': id } }).catch(() => {});
         return json({ ok: true });
       }
       if (id && method === 'GET') {
-        const hh = this.q1(`SELECT * FROM households WHERE id = ?`, id);
+        const hh = this.q1(`SELECT * FROM households WHERE id = ? AND status != 'deleted'`, id);
         return hh ? json(hh) : json({ error: 'غير موجود' }, 404);
       }
     }

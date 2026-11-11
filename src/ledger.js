@@ -51,6 +51,7 @@ const DEFAULT_SETTINGS = {
   default_deadline_hours: '4',
   default_remind_hours: '2',
   platform_phone: '',
+  shopping_driver_id: '',
   last_create_date: '',
   last_shopping_date: '',
   last_summary_date: '',
@@ -85,6 +86,7 @@ export class Ledger {
     for (const col of ["source TEXT DEFAULT 'whatsapp'", 'city TEXT', 'email TEXT', 'staff TEXT', 'note TEXT', 'ip TEXT']) {
       try { this.sql.exec(`ALTER TABLE leads ADD COLUMN ${col}`); } catch (e) { /* already there */ }
     }
+    try { this.sql.exec(`ALTER TABLE recurring ADD COLUMN assignee_id INTEGER`); } catch (e) { /* already there */ }
     for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
       this.sql.exec(`INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)`, k, v);
     }
@@ -195,6 +197,26 @@ export class Ledger {
   owners() {
     return this.q(`SELECT * FROM people WHERE role IN ('owner','family') AND active = 1 ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, id`);
   }
+  // A specific worker if one was chosen and is still active, otherwise the first active person of that role.
+  workerFor(role, assigneeId) {
+    if (assigneeId) {
+      const p = this.q1(`SELECT * FROM people WHERE id = ? AND active = 1`, assigneeId);
+      if (p) return p;
+    }
+    return this.peopleByRole(role)[0] || null;
+  }
+  shoppingDriver() {
+    return this.workerFor('driver', parseInt(this.settings().shopping_driver_id || '0', 10) || 0);
+  }
+  roleLabel(role, plural) {
+    return plural ? (role === 'maid' ? 'العاملات' : role === 'driver' ? 'السائقون' : ROLE_AR[role]) : ROLE_AR[role] || role;
+  }
+  // Ask «أي عاملة/سائق؟» when a house has more than one of that role. prefix = button id prefix (tgtp / recw)
+  async pickWorker(p, role, workers, prefix, intro) {
+    const rows = workers.map((w) => ({ id: `${prefix}:${w.id}`, title: w.name.slice(0, 24) }));
+    if (rows.length <= 3) return this.wa.buttons(p.phone, intro, rows);
+    return this.wa.list(p.phone, intro, 'اختر', [{ title: this.roleLabel(role, true), rows: rows.slice(0, 10) }]);
+  }
   isHousehold(p) {
     return p && (p.role === 'owner' || p.role === 'family');
   }
@@ -252,10 +274,23 @@ export class Ledger {
       }
       if (path === '/internal/people') return json(this.q(`SELECT name, role, phone FROM people WHERE active = 1`));
       if (path === '/internal/wipe' && request.method === 'POST') {
-        // household deleted from the Hub: clear everything so nothing lingers or keeps sending
-        if (this.settings().household_id === 'main') return json({ error: 'refusing to wipe platform ledger' }, 400);
-        for (const t of ['instances', 'recurring', 'requests', 'shopping', 'ratings', 'leads', 'seen', 'log', 'people', 'settings']) this.run(`DELETE FROM ${t}`);
+        // household deleted from the Hub: clear everything so nothing lingers or keeps sending.
+        // The platform ledger ("main") keeps what belongs to the platform: leads, template watch state, public origin, admin phone.
+        const platform = this.isPlatform;
+        const tables = ['instances', 'recurring', 'requests', 'shopping', 'ratings', 'seen', 'log', 'people'].concat(platform ? [] : ['leads']);
+        for (const t of tables) this.run(`DELETE FROM ${t}`);
+        if (platform) {
+          const keep = ['household_id', 'public_origin', 'platform_phone', 'bot_phone', 'notice_seq', 'templates_watch', 'templates_checked_at', 'templates_submitted', 'templates_resubmitted', 'templates_rejected_notified'];
+          this.run(`DELETE FROM settings WHERE key NOT IN (${keep.map(() => '?').join(',')})`, ...keep);
+          this.setSetting('household_name', 'منزلي');
+          this._settings = null;
+        } else {
+          this.run(`DELETE FROM settings`);
+        }
+        this.initSchema(); // defaults back in place
+        this._settings = null;
         await this.ctx.storage.deleteAlarm().catch(() => {});
+        this.log('info', 'household wiped');
         return json({ ok: true });
       }
       if (path === '/internal/bootstrap' && request.method === 'POST') {
@@ -408,6 +443,10 @@ export class Ledger {
     switch (a) {
       case 'tgt':
         return this.onTargetChosen(p, b);
+      case 'tgtp':
+        return this.onWorkerChosen(p, parseInt(b, 10));
+      case 'recw':
+        return this.onRecurringWorker(p, parseInt(b, 10));
       case 'done':
       case 'later':
       case 'prob':
@@ -501,7 +540,7 @@ export class Ledger {
     const pre = parsePrefix(text);
     if (pre?.kind === 'recurring') return this.proposeRecurring(p, pre.body);
     if (pre?.kind === 'shopping') return this.addShopping(p, pre.body);
-    if (pre?.kind === 'maid' || pre?.kind === 'driver') return this.createRequest(p, pre.kind, pre.body, media?.id || null);
+    if (pre?.kind === 'maid' || pre?.kind === 'driver') return this.requestFor(p, pre.kind, pre.body, media?.id || null);
 
     if (/^(ارسل|أرسل) المشتريات$/.test(norm) || /^مشتريات الان$/.test(norm)) return this.dispatchShopping(true, p);
     if (/^(ملخص|الملخص|ملخص اليوم)$/.test(norm)) return this.sendSummaryTo(p, this.today(), true);
@@ -548,7 +587,7 @@ export class Ledger {
   sendHelp(p) {
     return this.wa.text(
       p.phone,
-      `أنا ${this.botName} 🏠\n• اكتب أي طلب وسأسألك لمن هو\n• اختصارات: «ع: …» للعاملة، «س: …» للسائق، «م: حليب، خبز» للمشتريات\n• «دوري: تنظيف الحوش كل خميس 9 ص للعاملة» لإضافة مهمة دورية\n• «أرسل المشتريات» لإرسال القائمة الآن\n• «ملخص» لملخص اليوم حتى الآن`
+      `أنا ${this.botName} 🏠\n• اكتب أي طلب وسأسألك لمن هو (وإن كان في البيت أكثر من عاملة أو سائق أسألك أيهم)\n• اختصارات: «ع: …» للعاملة، «س: …» للسائق، «م: حليب، خبز» للمشتريات\n• «دوري: تنظيف الحوش كل خميس 9 ص للعاملة» لإضافة مهمة دورية\n• «أرسل المشتريات» لإرسال القائمة الآن\n• «ملخص» لملخص اليوم حتى الآن`
     );
   }
 
@@ -562,13 +601,29 @@ export class Ledger {
     this.setState(p, null);
     if (!state || state.kind !== 'await_target') return this.wa.text(p.phone, 'انتهت مهلة هذا الطلب؛ أعد إرساله من فضلك.');
     if (target === 'shopping') return this.addShopping(p, state.text);
-    return this.createRequest(p, target, state.text, state.media);
+    return this.requestFor(p, target, state.text, state.media);
   }
 
-  async createRequest(requester, role, text, mediaId) {
+  // one worker of that role → send; several → ask which one first
+  async requestFor(requester, role, text, mediaId) {
+    const workers = this.peopleByRole(role);
+    if (workers.length <= 1) return this.createRequest(requester, role, text, mediaId);
+    this.setState(requester, { kind: 'await_worker', role, text, media: mediaId || null });
+    return this.pickWorker(requester, role, workers, 'tgtp', `«${text.slice(0, 160)}»\nأي ${ROLE_AR[role]}؟`);
+  }
+
+  async onWorkerChosen(p, workerId) {
+    const state = this.getState(p);
+    this.setState(p, null);
+    if (!state || state.kind !== 'await_worker') return this.wa.text(p.phone, 'انتهت مهلة هذا الطلب؛ أعد إرساله من فضلك.');
+    return this.createRequest(p, state.role, state.text, state.media, workerId);
+  }
+
+  async createRequest(requester, role, text, mediaId, assigneeId) {
     const wa = this.wa;
-    const assignee = this.peopleByRole(role)[0];
+    const assignee = this.workerFor(role, assigneeId);
     if (!assignee) return wa.text(requester.phone, `لا يوجد ${ROLE_AR[role]} مسجّل بعد. أضفه من صفحة الإدارة.`);
+    role = assignee.role;
     const l2 = await this.translate(text, assignee.lang);
     const id = this.run(
       `INSERT INTO requests(created_at, requester_id, assignee_id, text, text_l2, media_id, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
@@ -753,7 +808,7 @@ export class Ledger {
       if (requester) await this.wa.text(requester.phone, 'القائمة فارغة.');
       return;
     }
-    const driver = this.peopleByRole('driver')[0];
+    const driver = this.shoppingDriver();
     if (!driver) {
       if (requester) await this.wa.text(requester.phone, 'لا يوجد سائق مسجّل. أضفه من صفحة الإدارة.');
       return;
@@ -813,7 +868,7 @@ export class Ledger {
     if (!r || !r.note) return this.wa.text(p.phone, 'لا توجد ملاحظة لإرسالها.');
     const table = r.kind === 'inst' ? 'instances' : r.kind === 'req' ? 'requests' : null;
     const row = table ? this.q1(`SELECT * FROM ${table} WHERE id = ?`, r.ref_id) : null;
-    const worker = row ? this.person(row.assignee_id) : this.peopleByRole('driver')[0];
+    const worker = row ? this.person(row.assignee_id) : this.shoppingDriver();
     if (!worker) return this.wa.text(p.phone, 'لم أجد العامل المعني.');
     const title = row ? (r.kind === 'inst' ? row.title : row.text) : 'المشتريات';
     const l2 = await this.translate(r.note, worker.lang);
@@ -883,18 +938,34 @@ export class Ledger {
     }
     if (!state?.parsed) return this.wa.text(p.phone, 'انتهت المهلة؛ أعد إرسال المهمة من جديد.');
     const r = state.parsed;
+    const workers = this.peopleByRole(r.assignee_role);
+    if (workers.length > 1) {
+      this.setState(p, { kind: 'rec_worker', parsed: r });
+      return this.pickWorker(p, r.assignee_role, workers, 'recw', `«${r.title}» — أي ${ROLE_AR[r.assignee_role]} تتولاها؟`);
+    }
     this.setState(p, null);
-    const worker = this.peopleByRole(r.assignee_role)[0];
+    return this.finishRecurring(p, r, null);
+  }
+
+  async onRecurringWorker(p, workerId) {
+    const state = this.getState(p);
+    this.setState(p, null);
+    if (!state?.parsed || state.kind !== 'rec_worker') return this.wa.text(p.phone, 'انتهت المهلة؛ أعد إرسال المهمة من جديد.');
+    return this.finishRecurring(p, state.parsed, workerId);
+  }
+
+  async finishRecurring(p, r, workerId) {
+    const worker = this.workerFor(r.assignee_role, workerId);
     const l2 = worker ? await this.translate(r.title, worker.lang) : '';
     const s = this.settings();
     const id = this.run(
-      `INSERT INTO recurring(title, title_l2, assignee_role, freq, days, interval_n, day_of_month, send_time, deadline_hours, remind_after_hours, active, start_date, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-      r.title, l2, r.assignee_role, r.freq, (r.days || []).join(','), r.interval || 1, r.day_of_month || 1, r.send_time || null,
+      `INSERT INTO recurring(title, title_l2, assignee_role, assignee_id, freq, days, interval_n, day_of_month, send_time, deadline_hours, remind_after_hours, active, start_date, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      r.title, l2, r.assignee_role, workerId || null, r.freq, (r.days || []).join(','), r.interval || 1, r.day_of_month || 1, r.send_time || null,
       parseFloat(s.default_deadline_hours) || 4, parseFloat(s.default_remind_hours) || 2, this.today(), T.isoNow()
     );
     const next = this.nextDueDate(this.q1(`SELECT * FROM recurring WHERE id = ?`, id));
-    return this.wa.text(p.phone, `✓ أُضيفت للدفتر${next ? `، وأول موعد لها ${next}` : ''}.`);
+    return this.wa.text(p.phone, `✓ أُضيفت للدفتر${worker && workerId ? ` (${worker.name})` : ''}${next ? `، وأول موعد لها ${next}` : ''}.`);
   }
 
   // ---------- scheduling ----------
@@ -1051,7 +1122,7 @@ export class Ledger {
     for (const rec of this.q(`SELECT * FROM recurring WHERE active = 1`)) {
       if (!this.isDue(rec, date)) continue;
       if (this.q1(`SELECT 1 FROM instances WHERE recurring_id = ? AND date = ? AND carried = 0`, rec.id, date)) continue;
-      const worker = this.peopleByRole(rec.assignee_role)[0];
+      const worker = this.workerFor(rec.assignee_role, rec.assignee_id);
       if (!worker) continue;
       this.run(
         `INSERT INTO instances(date, recurring_id, title, title_l2, assignee_id, send_time, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
@@ -1160,7 +1231,7 @@ export class Ledger {
   // ---------- summaries ----------
   summaryData(date) {
     const inst = this.q(`SELECT i.*, p.role AS role, p.name AS worker FROM instances i LEFT JOIN people p ON p.id = i.assignee_id WHERE i.date = ? AND i.status <> 'cancelled'`, date);
-    const reqs = this.q(`SELECT r.*, p.role AS role FROM requests r LEFT JOIN people p ON p.id = r.assignee_id WHERE substr(r.created_at,1,10) = ? OR substr(r.done_at,1,10) = ?`, date, date);
+    const reqs = this.q(`SELECT r.*, p.role AS role, p.name AS worker FROM requests r LEFT JOIN people p ON p.id = r.assignee_id WHERE substr(r.created_at,1,10) = ? OR substr(r.done_at,1,10) = ?`, date, date);
     const ratings = this.q(`SELECT score FROM ratings WHERE substr(created_at,1,10) = ?`, date);
     const notes = this.q(`SELECT r.note, r.kind, r.ref_id FROM ratings r WHERE substr(r.created_at,1,10) = ? AND r.note IS NOT NULL AND r.note <> ''`, date);
     const shopNA = this.q(`SELECT item FROM shopping WHERE status = 'unavailable' AND substr(sent_at,1,10) = ?`, date);
@@ -1194,7 +1265,18 @@ export class Ledger {
     const extra = [];
     if (d.shopNA.length) extra.push(`🛒 غير متوفر: ${d.shopNA.map((x) => x.item).join('، ')}`);
     for (const n of d.notes.slice(0, 3)) extra.push(`📝 ملاحظة: ${n.note}`);
-    const text = `📊 ملخص ${dateTxt}\nالعاملة: ${fmt(d.maid)} ✅\nالسائق: ${fmt(d.driver)} ✅\n⏳ تأخر: ${delayedTxt}\n⚠️ مشاكل: ${problemsTxt}\n⭐ تقييم اليوم: ${ratingTxt}${extra.length ? '\n' + extra.join('\n') : ''}\n📌 يُرحَّل للغد: ${carryTxt}`;
+    // several workers of one role → one line per worker
+    const roleLine = (role, x) => {
+      const ws = this.peopleByRole(role);
+      if (ws.length <= 1) return `${ROLE_AR[role]}: ${fmt(x)} ✅`;
+      const per = ws.map((w) => {
+        const mine = x.mine.filter((i) => i.assignee_id === w.id), mr = x.myReqs.filter((r) => r.assignee_id === w.id);
+        const total = mine.length + mr.length, done = mine.filter((i) => i.status === 'done').length + mr.filter((r) => r.status === 'done').length;
+        return `${w.name}: ${total ? `${done} من ${total}` : 'لا مهام'}`;
+      });
+      return `${this.roleLabel(role, true)}: ${per.join(' · ')} ✅`;
+    };
+    const text = `📊 ملخص ${dateTxt}\n${roleLine('maid', d.maid)}\n${roleLine('driver', d.driver)}\n⏳ تأخر: ${delayedTxt}\n⚠️ مشاكل: ${problemsTxt}\n⭐ تقييم اليوم: ${ratingTxt}${extra.length ? '\n' + extra.join('\n') : ''}\n📌 يُرحَّل للغد: ${carryTxt}`;
     const params = [dateTxt, fmt(d.maid), fmt(d.driver), delayedTxt, problemsTxt, ratingTxt, carryTxt];
     return { text, params, data: d };
   }
@@ -1391,15 +1473,17 @@ export class Ledger {
         break;
 
       case 'recurring':
-        if (method === 'GET') return json(this.q(`SELECT * FROM recurring ORDER BY active DESC, id`).map((r) => ({ ...r, human: describeRecurrence({ ...r, days: String(r.days || '').split(',').filter(Boolean).map(Number), interval: r.interval_n }) })));
+        if (method === 'GET') return json(this.q(`SELECT r.*, p.name AS assignee_name, (p.active = 1) AS assignee_active FROM recurring r LEFT JOIN people p ON p.id = r.assignee_id ORDER BY r.active DESC, r.id`).map((r) => ({ ...r, human: describeRecurrence({ ...r, days: String(r.days || '').split(',').filter(Boolean).map(Number), interval: r.interval_n }) })));
         if (method === 'POST') {
+          const chosen = body.assignee_id ? this.q1(`SELECT * FROM people WHERE id = ? AND active = 1 AND role IN ('maid','driver')`, parseInt(body.assignee_id, 10)) : null;
+          if (chosen) body.assignee_role = chosen.role;
           if (!body.title || !body.freq || !body.assignee_role) return json({ error: 'بيانات ناقصة' }, 400);
-          const worker = this.peopleByRole(body.assignee_role)[0];
+          const worker = chosen || this.peopleByRole(body.assignee_role)[0];
           const l2 = body.title_l2 || (worker ? await this.translate(body.title, worker.lang) : '');
           const newId = this.run(
-            `INSERT INTO recurring(title, title_l2, assignee_role, freq, days, interval_n, day_of_month, send_time, deadline_hours, remind_after_hours, escalate_now, active, start_date, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-            body.title, l2, body.assignee_role, body.freq, (body.days || []).join(','), parseInt(body.interval_n || 1, 10), parseInt(body.day_of_month || 1, 10),
+            `INSERT INTO recurring(title, title_l2, assignee_role, assignee_id, freq, days, interval_n, day_of_month, send_time, deadline_hours, remind_after_hours, escalate_now, active, start_date, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+            body.title, l2, body.assignee_role, chosen ? chosen.id : null, body.freq, (body.days || []).join(','), parseInt(body.interval_n || 1, 10), parseInt(body.day_of_month || 1, 10),
             body.send_time || null, parseFloat(body.deadline_hours || 4), parseFloat(body.remind_after_hours || 2), body.escalate_now ? 1 : 0, body.start_date || this.today(), T.isoNow()
           );
           return json({ ok: true, id: newId });
@@ -1408,9 +1492,14 @@ export class Ledger {
           const cur = this.q1(`SELECT * FROM recurring WHERE id = ?`, id);
           if (!cur) return json({ error: 'غير موجود' }, 404);
           const merged = { ...cur, ...body };
+          if ('assignee_id' in body) {
+            const chosen = body.assignee_id ? this.q1(`SELECT * FROM people WHERE id = ? AND active = 1 AND role IN ('maid','driver')`, parseInt(body.assignee_id, 10)) : null;
+            merged.assignee_id = chosen ? chosen.id : null;
+            if (chosen) merged.assignee_role = chosen.role;
+          }
           this.sql.exec(
-            `UPDATE recurring SET title = ?, title_l2 = ?, assignee_role = ?, freq = ?, days = ?, interval_n = ?, day_of_month = ?, send_time = ?, deadline_hours = ?, remind_after_hours = ?, escalate_now = ?, active = ?, paused_until = ? WHERE id = ?`,
-            merged.title, merged.title_l2 || null, merged.assignee_role, merged.freq, Array.isArray(merged.days) ? merged.days.join(',') : merged.days || '', parseInt(merged.interval_n || 1, 10),
+            `UPDATE recurring SET title = ?, title_l2 = ?, assignee_role = ?, assignee_id = ?, freq = ?, days = ?, interval_n = ?, day_of_month = ?, send_time = ?, deadline_hours = ?, remind_after_hours = ?, escalate_now = ?, active = ?, paused_until = ? WHERE id = ?`,
+            merged.title, merged.title_l2 || null, merged.assignee_role, merged.assignee_id || null, merged.freq, Array.isArray(merged.days) ? merged.days.join(',') : merged.days || '', parseInt(merged.interval_n || 1, 10),
             parseInt(merged.day_of_month || 1, 10), merged.send_time || null, parseFloat(merged.deadline_hours || 4), parseFloat(merged.remind_after_hours || 2), merged.escalate_now ? 1 : 0,
             merged.active === false || merged.active === 0 ? 0 : 1, merged.paused_until || null, id
           );
@@ -1461,7 +1550,10 @@ export class Ledger {
         if (method === 'POST' && !id) {
           const requester = this.owners()[0];
           if (!requester) return json({ error: 'أضف ربّ البيت أولاً' }, 400);
-          await this.createRequest(requester, body.role, body.text, null);
+          if (!String(body.text || '').trim()) return json({ error: 'اكتب نص الطلب' }, 400);
+          const aid = body.assignee_id ? parseInt(body.assignee_id, 10) : 0;
+          const role = aid ? (this.person(aid)?.role || body.role) : body.role;
+          await this.createRequest(requester, role, String(body.text).trim(), null, aid || null);
           return json({ ok: true });
         }
         break;
