@@ -1458,10 +1458,26 @@ export class Ledger {
           return json({ ok: true });
         }
         if (method === 'PUT' && id) {
-          this.sql.exec(
-            `UPDATE people SET name = ?, role = ?, phone = ?, lang = ?, gets_summary = ?, active = ? WHERE id = ?`,
-            body.name, body.role, normalizePhone(body.phone), body.lang || 'en', body.gets_summary ? 1 : 0, body.active === false ? 0 : 1, id
-          );
+          const cur = this.q1(`SELECT * FROM people WHERE id = ? AND active = 1`, id);
+          if (!cur) return json({ error: 'الشخص غير موجود' }, 404);
+          const name = String(body.name ?? cur.name).trim();
+          const role = body.role ?? cur.role;
+          const lang = body.lang ?? cur.lang;
+          const phone = body.phone != null && String(body.phone).trim() !== '' ? normalizePhone(body.phone) : cur.phone;
+          const gets = body.gets_summary == null ? cur.gets_summary : (body.gets_summary ? 1 : 0);
+          if (!name) return json({ error: 'الاسم مطلوب' }, 400);
+          if (!['owner', 'family', 'maid', 'driver'].includes(role)) return json({ error: 'الدور غير صالح' }, 400);
+          if (!phone || phone.length < 9) return json({ error: 'رقم واتساب غير صالح' }, 400);
+          if (phone !== cur.phone) {
+            const other = this.q1(`SELECT id, name, active FROM people WHERE phone = ? AND id != ?`, phone, id);
+            if (other && other.active) return json({ error: `هذا الرقم مسجّل باسم «${other.name}»` }, 409);
+            const claim = await this.hubClaim(phone);
+            if (!claim.ok) return json({ error: claim.error }, 409);
+            if (other) this.sql.exec(`DELETE FROM people WHERE id = ?`, other.id); // an old removed entry with that number
+          }
+          this.sql.exec(`UPDATE people SET name = ?, role = ?, phone = ?, lang = ?, gets_summary = ? WHERE id = ?`, name, role, phone, lang, gets, id);
+          if (phone !== cur.phone) await this.hubRelease(cur.phone);
+          this.log('info', 'person updated', { id, from: { name: cur.name, role: cur.role, phone: cur.phone }, to: { name, role, phone } });
           return json({ ok: true });
         }
         if (method === 'DELETE' && id) {
