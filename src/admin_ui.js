@@ -38,6 +38,7 @@ label{display:block;font-size:13px;color:var(--ink2);margin:10px 0 4px}
 .grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:end}.grid2>div{min-width:0;display:flex;flex-direction:column;justify-content:flex-end}.grid2 label{flex:1 0 auto}
 input[type=date],input[type=time]{-webkit-appearance:none;appearance:none;display:block;min-height:44px;max-width:100%;text-align:right}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.bar{display:flex;align-items:center;gap:8px;margin:6px 0}.bar .lbl{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar .trk{flex:2;height:8px;background:var(--tint);border-radius:4px;overflow:hidden}.bar .fil{height:100%;background:var(--indigo);border-radius:4px}.bar .val{width:34px;text-align:left;font-size:12px;color:var(--ink2);font-family:'Outfit',sans-serif}.seg{display:flex;gap:6px;margin-bottom:10px}.seg button{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 12px;font-size:13px}.seg button.on{background:var(--navy);color:#fff;border-color:var(--navy)}.wk{display:grid;grid-template-columns:1fr auto;gap:4px 10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2)}.wk:last-child{border-bottom:none}.wk .m{font-size:12px;color:var(--ink2)}.badge{font-size:11px;border-radius:999px;padding:2px 8px;background:#FFF1D6;color:#7A5200;margin-inline-start:4px}.badge.fast{background:#DDF7EE;color:#0E7A5B}
 .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.kpi div{background:var(--cloud);border:1px solid var(--line);border-radius:14px;padding:10px;text-align:center}.kpi b{display:block;font-size:22px;color:var(--indigo);font-family:'Outfit','Alexandria',sans-serif}.kpi span{font-size:12px;color:var(--muted)}
 pre{background:var(--tint);border-radius:12px;padding:10px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;max-width:100%;font-size:12px;direction:ltr;text-align:left}
 .row>div{min-width:0}.pills{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-start;align-items:center;flex:none;max-width:60%}.logrow>div{width:100%}.logdata{margin-top:6px;max-height:220px;overflow:auto}
@@ -60,7 +61,7 @@ ${message ? `<p class="pill bad" style="display:block;padding:10px">${message}</
 <script>function setKind(k){var a=k==='admin';document.getElementById('kind').value=k;document.getElementById('k_owner').classList.toggle('on',!a);document.getElementById('k_admin').classList.toggle('on',a);document.getElementById('l_id').textContent=a?'اسم المستخدم':'رقم الجوال';var f=document.getElementById('f_id');f.placeholder=a?'':'05xxxxxxxx';f.setAttribute('inputmode',a?'text':'tel');f.value='';document.getElementById('hint').textContent=a?'لمدير منصة مُدار فقط.':'ربّ الأسرة يدخل برقم الجوال وكلمة المرور التي ضبطها من رابط الدعوة.';f.focus()}</script></body></html>`;
 }
 
-export const UI_VERSION = '2026-11-11.8';
+export const UI_VERSION = '2026-11-11.9';
 const escapeHtml = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 export const ADMIN_HTML = (role = 'owner', opts = {}) => `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mudaar — الإدارة</title>${FONTS}<style>${CSS}</style></head>
 <body>
@@ -71,8 +72,8 @@ ${opts.impersonating ? `<div style="background:#FFF3D1;color:#7A5200;font-size:1
 <p class="muted" style="text-align:center;font-size:11px;margin:4px 0 16px">mudaar · ${UI_VERSION}</p>
 <script>
 const ME={role:'${role}',platform:${opts.platform ? 'true' : 'false'},impersonating:${opts.impersonating ? 'true' : 'false'}};const SUPER=ME.role==='super';const OWNER=SUPER||ME.role==='owner';const CONSOLE=SUPER&&!ME.impersonating;
-const ALL_TABS=[['households','المنازل'],['setup','إعداد المنصة'],['leads','المهتمّون'],['today','اليوم'],['recurring','المهام الدورية'],['people','الأشخاص'],['requests','الطلبات'],['shopping','المشتريات'],['ratings','التقييمات'],['settings','الإعدادات'],['log','السجل']];
-const FAMILY_TABS=['today','recurring','requests'];const CONSOLE_TABS=['households','setup','leads','log'];
+const ALL_TABS=[['households','المنازل'],['setup','إعداد المنصة'],['leads','المهتمّون'],['today','اليوم'],['dashboard','لوحة المعلومات'],['recurring','المهام الدورية'],['people','الأشخاص'],['requests','الطلبات'],['shopping','المشتريات'],['ratings','التقييمات'],['settings','الإعدادات'],['log','السجل']];
+const FAMILY_TABS=['today','dashboard','recurring','requests'];const CONSOLE_TABS=['households','setup','leads','log'];
 const TABS=ALL_TABS.filter(([k])=>{if(CONSOLE)return CONSOLE_TABS.includes(k);if(CONSOLE_TABS.includes(k)&&k!=='log')return false;if(!OWNER)return FAMILY_TABS.includes(k);return true});
 const ROLE={owner:'ربّ البيت',family:'أهل البيت',maid:'العاملة',driver:'السائق'};
 const workers=list=>(list||[]).filter(p=>p.role==='maid'||p.role==='driver');
@@ -114,6 +115,21 @@ const VIEWS={
   h+='<div class="card"><h2>7) تجربة الاتصال</h2><p class="muted">يرسل رسالة تجريبية إلى «جوال مدير المنصة» (اضبطه في بطاقة إشعارات المنصة أعلاه) للتأكد أن الربط مع واتساب يعمل.</p><div class="actions"><button class="btn" onclick="sendTest()">أرسل رسالة تجريبية</button></div></div>';
   h+='<p class="muted" style="text-align:center">الوقت الآن بتوقيت الرياض: '+o.now+' · التاريخ: '+o.today+'</p>';
   $('#main').innerHTML=h;checkStatus();
+ },
+ async dashboard(){
+  const days=window._dashDays||30;const d=await api('dashboard?days='+days);
+  const tile=(v,l)=>'<div><b>'+(v==null?'—':v)+'</b><span>'+l+'</span></div>';const pct=v=>v==null?'—':v+'%';const mins=v=>v==null?'—':(v<60?v+' د':(Math.round(v/6)/10)+' س');const star=v=>v==null?'—':(v>=2.5?'😊 ':v>=1.8?'😐 ':'😞 ')+v;
+  const wname=id=>{const w=d.workers.find(x=>x.id===id);return w?w.name:''};
+  let h='<div class="seg">'+[7,30,90].map(n=>'<button class="'+(days===n?'on':'')+'" onclick="window._dashDays='+n+';render()">'+(n===7?'7 أيام':n===30?'30 يوماً':'90 يوماً')+'</button>').join('')+'</div>';
+  h+='<div class="card"><h2>البيت الآن</h2><div class="kpi">'+tile(d.counts.people,'أشخاص')+tile(d.counts.workers,'عمالة ('+d.counts.maids+' عاملة · '+d.counts.drivers+' سائق)')+tile(d.counts.recurring,'مهام دورية')+'</div></div>';
+  h+='<div class="card"><h2>المهام المتأخرة اليوم ('+d.overdue.length+')</h2>'+(d.overdue.length?d.overdue.map(i=>'<div class="row"><div><div class="t">'+esc(i.title)+'</div><div class="s">'+esc(i.worker)+(i.send_time?' · '+i.send_time:'')+(i.defers?' · أُجّلت '+i.defers:'')+'</div></div>'+pill(i.status)+'</div>').join(''):'<p class="muted">لا مهام متأخرة اليوم ✅</p>')+'</div>';
+  h+='<div class="card"><h2>هذا الشهر</h2><div class="kpi">'+tile(d.month.tasks_done+'/'+d.month.tasks,'مهام دورية (أُنجز/الكل)')+tile(d.month.requests_done+'/'+d.month.requests,'طلبات (أُنجز/الكل)')+tile(d.kpi.open_shopping,'أصناف مشتريات مفتوحة')+'</div></div>';
+  h+='<div class="card"><h2>مؤشرات سريعة · آخر '+days+' يوماً</h2><div class="kpi">'+tile(pct(d.kpi.completion),'نسبة الإنجاز')+tile(pct(d.kpi.on_time),'في الوقت (بلا تأجيل)')+tile(mins(d.kpi.response_min),'متوسط الاستجابة')+'</div><div class="kpi" style="margin-top:8px">'+tile(star(d.kpi.rating),'متوسط التقييم (من 3)')+tile(d.kpi.problems,'مشاكل مُبلغة')+tile(d.kpi.total,'إجمالي المهام والطلبات')+'</div></div>';
+  h+='<div class="card"><h2>العمالة</h2>'+(d.workers.length?d.workers.map(w=>'<div class="wk"><div><div class="t">'+esc(w.name)+' <span class="pill">'+ROLE[w.role]+'</span>'+(w.id===d.best?'<span class="badge">⭐ الأكثر تميّزاً</span>':'')+(w.id===d.fastest?'<span class="badge fast">⚡ الأسرع استجابة</span>':'')+'</div><div class="m">'+w.done+'/'+w.total+' مهمة · إنجاز '+pct(w.completion)+' · في الوقت '+pct(w.on_time)+' · استجابة '+mins(w.response_min)+' · تقييم '+star(w.rating)+(w.ratings?' ('+w.ratings+')':'')+(w.problems?' · ⚠️ '+w.problems:'')+'</div></div><div class="bar" style="width:90px;margin:0"><div class="trk"><div class="fil" style="width:'+(w.completion||0)+'%"></div></div></div></div>').join(''):'<p class="muted">لا عمالة بعد.</p>')+(d.workers.length?'<p class="muted" style="margin-top:8px">«الأكثر تميّزاً» بحسب تقييمات أهل البيت ثم نسبة الإنجاز؛ «الأسرع» بحسب متوسط الوقت من الإرسال حتى «تم».</p>':'')+'</div>';
+  const bars=(list,key)=>{const max=Math.max(1,...list.map(x=>x.n));return list.map(x=>'<div class="bar"><div class="lbl" title="'+esc(x[key])+'">'+esc(x[key])+'</div><div class="trk"><div class="fil" style="width:'+Math.round(x.n/max*100)+'%"></div></div><div class="val">'+x.n+'</div></div>').join('')};
+  h+='<div class="card"><h2>من يطلب أكثر؟</h2>'+(d.requesters.length?bars(d.requesters,'name'):'<p class="muted">لا طلبات في هذه الفترة.</p>')+'</div>';
+  h+='<div class="card"><h2>أكثر الطلبات تكراراً</h2>'+(d.top_requests.length?bars(d.top_requests,'text'):'<p class="muted">لا طلبات في هذه الفترة.</p>')+'</div>';
+  $('#main').innerHTML=h;
  },
  async today(){
   const t=await api('today');let h='<div class="card"><h2>ملخص اليوم حتى الآن</h2><pre style="direction:rtl;text-align:right;font-family:inherit;font-size:14px">'+esc(t.summary)+'</pre><div class="actions">'+(OWNER?'<button class="btn sec" onclick="api(\\'send/summary\\',\\'POST\\').then(()=>toast(\\'أُرسل الملخص\\'))">أرسل الملخص الآن</button>':'')+'</div></div>';

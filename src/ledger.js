@@ -1279,6 +1279,84 @@ export class Ledger {
     return { inst, reqs, maid, driver, delayed, problems, counts, carry, notes, shopNA };
   }
 
+  // ---------- house dashboard ----------
+  dashboard(days) {
+    const today = this.today();
+    const since = new Date(Date.now() - days * 86400000).toISOString();
+    const monthStart = today.slice(0, 8) + '01';
+    const people = this.q(`SELECT id, name, role FROM people WHERE active = 1`);
+    const byId = Object.fromEntries(people.map((p) => [p.id, p]));
+    const workers = people.filter((p) => p.role === 'maid' || p.role === 'driver');
+    const familyIds = people.filter((p) => p.role === 'owner' || p.role === 'family').map((p) => p.id);
+    const mins = (a, b) => (a && b ? Math.max(0, (new Date(b) - new Date(a)) / 60000) : null);
+
+    // today's overdue (same rule as the evening summary)
+    const d = this.summaryData(today);
+    const overdue = d.delayed.filter((i) => i.status !== 'done').map((i) => ({ title: i.title, worker: i.worker || byId[i.assignee_id]?.name || '', status: i.status, defers: i.defers, send_time: i.send_time }));
+
+    // this calendar month
+    const mi = this.q(`SELECT status FROM instances WHERE date >= ? AND date <= ? AND status <> 'cancelled'`, monthStart, today);
+    const mr = this.q(`SELECT status FROM requests WHERE created_at >= ? AND status <> 'cancelled'`, monthStart + 'T00:00:00Z');
+    const month = { tasks: mi.length, tasks_done: mi.filter((x) => x.status === 'done').length, requests: mr.length, requests_done: mr.filter((x) => x.status === 'done').length };
+
+    // per worker over the period
+    const inst = this.q(`SELECT assignee_id, status, defers, sent_at, done_at FROM instances WHERE created_at >= ? AND status <> 'cancelled'`, since);
+    const reqs = this.q(`SELECT id, assignee_id, requester_id, text, status, defers, sent_at, done_at FROM requests WHERE created_at >= ? AND status <> 'cancelled'`, since);
+    const rInst = this.q(`SELECT r.score, i.assignee_id FROM ratings r JOIN instances i ON r.kind = 'inst' AND r.ref_id = i.id WHERE r.created_at >= ? AND r.score IS NOT NULL`, since);
+    const rReq = this.q(`SELECT r.score, q.assignee_id FROM ratings r JOIN requests q ON r.kind = 'req' AND r.ref_id = q.id WHERE r.created_at >= ? AND r.score IS NOT NULL`, since);
+    const perWorker = workers.map((w) => {
+      const mine = [...inst.filter((x) => x.assignee_id === w.id), ...reqs.filter((x) => x.assignee_id === w.id)];
+      const done = mine.filter((x) => x.status === 'done');
+      const onTime = done.filter((x) => !x.defers);
+      const resp = done.map((x) => mins(x.sent_at, x.done_at)).filter((v) => v != null);
+      const scores = [...rInst, ...rReq].filter((r) => r.assignee_id === w.id).map((r) => r.score);
+      const avg = (a) => (a.length ? a.reduce((p, c) => p + c, 0) / a.length : null);
+      return {
+        id: w.id, name: w.name, role: w.role, total: mine.length, done: done.length,
+        completion: mine.length ? Math.round((done.length / mine.length) * 100) : null,
+        on_time: done.length ? Math.round((onTime.length / done.length) * 100) : null,
+        response_min: resp.length ? Math.round(avg(resp)) : null, timed: resp.length,
+        rating: scores.length ? Math.round(avg(scores) * 100) / 100 : null, ratings: scores.length,
+        problems: mine.filter((x) => x.status === 'problem').length,
+      };
+    });
+    // "most distinguished": rating first (needs >= 2 ratings), then completion, then on-time
+    // badges need a little history: 3 completed tasks for «الأكثر تميّزاً», 3 timed completions for «الأسرع»
+    const scored = perWorker.filter((w) => w.done >= 3);
+    const best = scored.slice().sort((a, b) => (b.rating ?? 0) * (b.ratings >= 2 ? 1 : 0.5) - (a.rating ?? 0) * (a.ratings >= 2 ? 1 : 0.5) || (b.completion ?? 0) - (a.completion ?? 0) || (b.on_time ?? 0) - (a.on_time ?? 0))[0] || null;
+    const fastest = perWorker.filter((w) => w.timed >= 3).sort((a, b) => a.response_min - b.response_min)[0] || null;
+
+    // who asks most, and what is asked most
+    const byRequester = {};
+    for (const r of reqs) if (r.requester_id) byRequester[r.requester_id] = (byRequester[r.requester_id] || 0) + 1;
+    const requesters = Object.entries(byRequester).map(([id, n]) => ({ name: byId[id]?.name || 'شخص سابق', n })).sort((a, b) => b.n - a.n).slice(0, 5);
+    const norm = (t) => String(t || '').trim().replace(/[\u064B-\u0652]/g, '').replace(/[إأآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/\s+/g, ' ').toLowerCase();
+    const byText = {};
+    for (const r of reqs) { const k = norm(r.text); if (!k) continue; (byText[k] = byText[k] || { text: r.text, n: 0 }).n++; }
+    const topRequests = Object.values(byText).sort((a, b) => b.n - a.n).slice(0, 5);
+
+    const all = [...inst, ...reqs];
+    const allDone = all.filter((x) => x.status === 'done');
+    const allResp = allDone.map((x) => mins(x.sent_at, x.done_at)).filter((v) => v != null);
+    const allScores = [...rInst, ...rReq].map((r) => r.score);
+    return {
+      days, today,
+      counts: { people: people.length, family: familyIds.length, workers: workers.length, maids: workers.filter((w) => w.role === 'maid').length, drivers: workers.filter((w) => w.role === 'driver').length, recurring: this.q1(`SELECT COUNT(*) AS n FROM recurring WHERE active = 1`).n },
+      overdue, month,
+      kpi: {
+        total: all.length, done: allDone.length,
+        completion: all.length ? Math.round((allDone.length / all.length) * 100) : null,
+        on_time: allDone.length ? Math.round((allDone.filter((x) => !x.defers).length / allDone.length) * 100) : null,
+        response_min: allResp.length ? Math.round(allResp.reduce((p, c) => p + c, 0) / allResp.length) : null,
+        rating: allScores.length ? Math.round((allScores.reduce((p, c) => p + c, 0) / allScores.length) * 100) / 100 : null,
+        problems: all.filter((x) => x.status === 'problem').length,
+        requests: reqs.length, open_shopping: this.q1(`SELECT COUNT(*) AS n FROM shopping WHERE status = 'open'`).n,
+      },
+      workers: perWorker, best: best ? best.id : null, fastest: fastest ? fastest.id : null,
+      requesters, top_requests: topRequests,
+    };
+  }
+
   summaryText(date) {
     const d = this.summaryData(date);
     const fmt = (x) => (x.total ? `${x.done} من ${x.total}` : 'لا مهام');
@@ -1379,7 +1457,7 @@ export class Ledger {
   familyAllowed(method, route) {
     if (method !== 'GET') return false;
     const res = route.split('/')[0].split('?')[0];
-    return ['overview', 'today', 'recurring', 'requests', 'me'].includes(res);
+    return ['overview', 'today', 'recurring', 'requests', 'me', 'dashboard'].includes(res);
   }
   async sha(text) {
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -1564,6 +1642,9 @@ export class Ledger {
           return json({ ok: true });
         }
         break;
+
+      case 'dashboard':
+        return json(this.dashboard(Math.min(365, Math.max(7, parseInt(url.searchParams.get('days') || '30', 10) || 30))));
 
       case 'today': {
         const date = url.searchParams.get('date') || this.today();
