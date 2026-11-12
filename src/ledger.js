@@ -1774,7 +1774,8 @@ export class Ledger {
         if (!allowed[table]) return json({ error: 'جدول غير معروف' }, 400);
         const rows = this.q(allowed[table]);
         const cols = rows.length ? Object.keys(rows[0]) : [];
-        const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        // CSV: quote everything, and neutralise spreadsheet formula injection (=, +, -, @, tab, CR)
+        const esc = (v) => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return `"${t.replace(/"/g, '""')}"`; };
         const csv = '﻿' + [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\r\n');
         return new Response(csv, { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${table}-${this.today()}.csv"` } });
       }
