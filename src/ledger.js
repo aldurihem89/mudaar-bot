@@ -52,6 +52,10 @@ const DEFAULT_SETTINGS = {
   default_remind_hours: '2',
   platform_phone: '',
   shopping_driver_id: '',
+  webhook_unsigned: '',
+  webhook_unsigned_warned_at: '',
+  pf_notice_bucket: '',
+  pf_notice_count: '0',
   last_create_date: '',
   last_shopping_date: '',
   last_summary_date: '',
@@ -261,6 +265,7 @@ export class Ledger {
     const path = url.pathname;
     try {
       if (path === '/webhook' && request.method === 'POST') {
+        if (request.headers.get('x-unsigned') === '1') this.noteUnsignedWebhook();
         const body = await request.json();
         await this.handleWebhook(body);
         return json({ ok: true });
@@ -779,6 +784,16 @@ export class Ledger {
   async notifyHousehold(text, subject, mediaId) {
     for (const o of this.owners()) await this.safeNotify(o, text, subject, mediaId);
   }
+  // The webhook arrived without a Meta signature (APP_SECRET not set): remember it, and warn the platform admin once a day.
+  noteUnsignedWebhook() {
+    const s = this.settings();
+    if (s.webhook_unsigned !== '1') this.setSetting('webhook_unsigned', '1');
+    const last = s.webhook_unsigned_warned_at || '';
+    if (this.isPlatform && T.hoursSince(last || null) >= 24) {
+      this.setSetting('webhook_unsigned_warned_at', T.isoNow());
+      this.notifyPlatform('🔐 تنبيه أمني: البوت يستقبل أحداث واتساب بدون التحقق من توقيع Meta لأن APP_SECRET غير مضبوط في Cloudflare. أضفه من Settings ← Variables and Secrets (قيمته App Secret من لوحة تطبيق Meta) لإغلاق هذه الثغرة.', 'الأمان').catch(() => {});
+    }
+  }
   // Platform notices (templates, leads, website visitors): the platform admin's phone only.
   // Order: settings.platform_phone → env.SUPER_PHONE → the house owner(s) of this ledger (role owner only, never family).
   platformRecipients() {
@@ -790,6 +805,19 @@ export class Ledger {
     return this.q(`SELECT * FROM people WHERE role = 'owner' AND active = 1 ORDER BY id`);
   }
   async notifyPlatform(text, subject, mediaId) {
+    // strangers (website visitors, interest form) can't make the bot spam the admin: 8 notices per hour, then a single mute notice
+    if (subject === 'زائر الموقع' || subject === 'نموذج الاهتمام') {
+      const bucket = T.isoNow().slice(0, 13);
+      const s = this.settings();
+      let n = s.pf_notice_bucket === bucket ? parseInt(s.pf_notice_count || '0', 10) : 0;
+      n += 1;
+      this.setSetting('pf_notice_bucket', bucket); this.setSetting('pf_notice_count', String(n));
+      if (n > 8) {
+        this.log('warn', 'platform notice muted (cap)', { subject });
+        if (n === 9) text = '🔕 وصلت إشعارات كثيرة من زوار الموقع خلال هذه الساعة؛ كُتم الباقي حتى الساعة القادمة. راجع تبويب «المهتمّون».';
+        else return;
+      }
+    }
     for (const o of this.platformRecipients()) await this.safeNotify(o, text, subject, mediaId);
   }
 
@@ -1807,6 +1835,7 @@ export class Ledger {
       ADMIN_PASSWORD: Boolean(e.ADMIN_PASSWORD),
       APP_ID: Boolean(e.APP_ID),
       APP_SECRET: Boolean(e.APP_SECRET),
+      webhook_unsigned_seen: this.settings().webhook_unsigned === '1',
       AI: Boolean(e.AI),
     };
   }

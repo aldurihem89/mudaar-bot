@@ -61,7 +61,7 @@ ${message ? `<p class="pill bad" style="display:block;padding:10px">${message}</
 <script>function setKind(k){var a=k==='admin';document.getElementById('kind').value=k;document.getElementById('k_owner').classList.toggle('on',!a);document.getElementById('k_admin').classList.toggle('on',a);document.getElementById('l_id').textContent=a?'اسم المستخدم':'رقم الجوال';var f=document.getElementById('f_id');f.placeholder=a?'':'05xxxxxxxx';f.setAttribute('inputmode',a?'text':'tel');f.value='';document.getElementById('hint').textContent=a?'لمدير منصة مُدار فقط.':'ربّ الأسرة يدخل برقم الجوال وكلمة المرور التي ضبطها من رابط الدعوة.';f.focus()}</script></body></html>`;
 }
 
-export const UI_VERSION = '2026-11-11.9';
+export const UI_VERSION = '2026-11-12.1';
 const escapeHtml = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 export const ADMIN_HTML = (role = 'owner', opts = {}) => `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mudaar — الإدارة</title>${FONTS}<style>${CSS}</style></head>
 <body>
@@ -103,7 +103,8 @@ const VIEWS={
  },
  async setup(){
   const o=await api('overview');const s=o.secrets;const st=await api('settings').catch(()=>({}));const miss=Object.entries({WHATSAPP_TOKEN:'المفتاح الدائم',PHONE_NUMBER_ID:'Phone number ID',WABA_ID:'WhatsApp Business Account ID',ADMIN_PASSWORD:'كلمة مرور الإدارة'}).filter(([k])=>!s[k]);
-  let h='<div class="card"><h2>1) القيم السرية في Cloudflare</h2>';
+  let h='';if(!s.APP_SECRET){h+='<div class="card" style="border:2px solid #E5484D;background:#FFF5F5"><h2 style="color:#B23A2A">🔐 تنبيه أمني: APP_SECRET غير مضبوط</h2><p class="muted">بدونه لا يتحقق البوت من توقيع Meta على أحداث واتساب، فيمكن لمن يعرف رابط الـ Webhook إرسال أحداث مزيّفة. أضفه الآن: Cloudflare ← Worker ← Settings ← Variables and Secrets ← Add ← الاسم <b>APP_SECRET</b> والقيمة من developers.facebook.com ← تطبيقك ← App settings ← Basic ← App Secret.'+(s.webhook_unsigned_seen?' <b>وقد وصلت أحداث غير موقّعة فعلاً.</b>':'')+'</p></div>'}
+  h+='<div class="card"><h2>1) القيم السرية في Cloudflare</h2>';
   h+=miss.length?'<p class="pill bad" style="display:block;padding:10px">ناقص: '+miss.map(x=>x[1]).join('، ')+'</p><p class="muted">أضفها من لوحة Cloudflare: Worker ← Settings ← Variables and Secrets ← Add، ثم حدّث هذه الصفحة.</p>':'<p class="pill ok" style="display:block;padding:10px">كل القيم الأساسية موجودة ✅</p>';
   h+='<p class="muted">اختياري: APP_ID وAPP_SECRET لضبط Webhook تلقائياً والتحقق من توقيع الرسائل ('+(s.APP_ID&&s.APP_SECRET?'موجودان':'غير موجودين')+'). الترجمة الآلية: '+(s.AI?'مفعّلة':'غير متاحة')+'.</p></div>';
   h+='<div class="card"><h2>إشعارات المنصة</h2><p class="muted">جوال مدير المنصة الذي يستلم إشعارات القوالب والمهتمّين وزوار الموقع — ولا تصل هذه الإشعارات لأهل أي منزل.</p><label>جوال مدير المنصة</label><input id="pf_phone" inputmode="tel" dir="ltr" placeholder="05xxxxxxxx" value="'+esc(st.platform_phone||'')+'"><div class="actions"><button class="btn sec" onclick="savePlatformPhone()">حفظ</button></div></div>';

@@ -30,9 +30,41 @@ const unb64u = (s) => decodeURIComponent(escape(atob(s.replace(/-/g, '+').replac
 const sessionSecret = (env) => env.SESSION_SECRET || env.ADMIN_PASSWORD || '';
 
 async function makeCookie(env, session) {
-  const payload = b64u(JSON.stringify({ ...session, exp: Date.now() + 30 * 86400000 }));
+  // the platform console (super) lives 12 hours; household sessions 30 days
+  const ttl = session.r === 'super' || session.su ? 12 * 3600000 : 30 * 86400000;
+  const payload = b64u(JSON.stringify({ ...session, exp: Date.now() + ttl }));
   const sig = await hmacHex(sessionSecret(env), payload);
-  return `mb=${payload}.${sig}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`;
+  return `mb=${payload}.${sig}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(ttl / 1000)}`;
+}
+function safeEqual(a, b) {
+  a = String(a); b = String(b);
+  if (a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+async function rateLimit(env, key, limit, window_ms, lock_ms) {
+  try {
+    const r = await hub(env).fetch('https://hub.internal/rl', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, limit, window_ms, lock_ms }) });
+    return await r.json();
+  } catch { return { ok: true }; }
+}
+// security headers on every response that leaves the Worker
+const SEC_HEADERS = {
+  'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+  'Cross-Origin-Opener-Policy': 'same-origin',
+};
+const CSP_APP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
+const CSP_SITE = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self'; media-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
+function withSecurity(res, csp) {
+  const h = new Headers(res.headers);
+  for (const [k, v] of Object.entries(SEC_HEADERS)) if (!h.has(k)) h.set(k, v);
+  if (csp && (h.get('content-type') || '').includes('text/html') && !h.has('Content-Security-Policy')) h.set('Content-Security-Policy', csp);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
 }
 async function readSession(env, request) {
   if (!sessionSecret(env)) return null;
@@ -57,14 +89,28 @@ async function readBody(request) {
   return fd ? Object.fromEntries(fd.entries()) : {};
 }
 
+const publicHostList = (env) => String(env.PUBLIC_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean);
+
 export default {
   async fetch(request, env, ctx) {
+    const res = await handle(request, env, ctx);
+    const isSite = publicHostList(env).includes(new URL(request.url).hostname);
+    return withSecurity(res, isSite ? CSP_SITE : CSP_APP);
+  },
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(hub(env).fetch('https://hub.internal/cron', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }));
+  },
+};
+
+async function handle(request, env, ctx) {
+  {
     const url = new URL(request.url);
     const path = url.pathname;
-    const publicHosts = String(env.PUBLIC_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean);
+    const publicHosts = publicHostList(env);
     const isPublicHost = publicHosts.includes(url.hostname);
     const appOrigin = env.APP_HOST ? `https://${env.APP_HOST}` : url.origin;
-    const stdHeaders = { 'Content-Type': 'application/json', 'x-public-origin': url.origin };
+    const ip = request.headers.get('cf-connecting-ip') || '';
+    const stdHeaders = { 'Content-Type': 'application/json', 'x-public-origin': url.origin, 'x-ip': ip };
 
     // ----- Meta webhook -----
     if (path === '/webhook' && request.method === 'GET') {
@@ -81,16 +127,20 @@ export default {
       if (env.APP_SECRET) {
         const header = request.headers.get('x-hub-signature-256') || '';
         const expected = 'sha256=' + (await hmacHex(env.APP_SECRET, raw));
-        if (header !== expected) return new Response('bad signature', { status: 401 });
+        if (!safeEqual(header, expected)) return new Response('bad signature', { status: 401 });
+      } else if (raw.length > 200000) {
+        return new Response('too large', { status: 413 });
       }
-      ctx.waitUntil(dispatchWebhook(env, raw, url.origin));
+      // an unsigned webhook (no APP_SECRET yet) is flagged to the platform ledger so the admin is told to set it
+      ctx.waitUntil(dispatchWebhook(env, raw, url.origin, !env.APP_SECRET));
       return new Response('ok', { status: 200 });
     }
 
     // ----- public interest form → platform household -----
     if (path === '/api/interest' && request.method === 'POST') {
       const raw = await request.text();
-      const ip = request.headers.get('cf-connecting-ip') || '';
+      const rl = await rateLimit(env, 'interest:ip:' + (ip || 'unknown'), 6, 3600000, 3600000);
+      if (!rl.ok) return jsonRes({ error: 'تم استلام طلبك مسبقاً — سنتواصل معك قريباً' }, 429);
       const r = await ledger(env, MAIN).fetch('https://ledger.internal/interest' + url.search, { method: 'POST', headers: { ...stdHeaders, 'x-ip': ip, 'x-household': MAIN }, body: raw });
       return new Response(await r.text(), { status: r.status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
     }
@@ -120,7 +170,7 @@ export default {
         const body = await readBody(request);
         const r = await hub(env).fetch('https://hub.internal/auth/login', { method: 'POST', headers: stdHeaders, body: JSON.stringify(body) });
         const j = await r.json().catch(() => ({}));
-        if (!r.ok || !j.session) return htmlRes(LOGIN_HTML(j.error || 'تعذّر الدخول', body.kind === 'admin' ? 'admin' : 'owner'), r.status === 500 ? 500 : 401);
+        if (!r.ok || !j.session) return htmlRes(LOGIN_HTML(j.error || 'تعذّر الدخول', body.kind === 'admin' ? 'admin' : 'owner'), r.status === 500 ? 500 : r.status === 429 ? 429 : 401);
         return redirect('/admin', { 'Set-Cookie': await makeCookie(env, j.session) });
       }
       if (path === '/admin/logout') return redirect('/admin', { 'Set-Cookie': clearCookie });
@@ -176,16 +226,12 @@ export default {
     if (path === '/health') return new Response('ok');
     if (env.ASSETS) return env.ASSETS.fetch(request); // static files: site pages, welcome videos
     return new Response('not found', { status: 404 });
-  },
-
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(hub(env).fetch('https://hub.internal/cron', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }));
-  },
-};
+  }
+}
 
 // Split one Meta webhook payload by household: each message goes to the household its sender belongs to;
 // unknown senders go to the platform household (visitor flow); delivery statuses follow the recipient.
-async function dispatchWebhook(env, raw, origin) {
+async function dispatchWebhook(env, raw, origin, unsigned = false) {
   let body;
   try { body = JSON.parse(raw); } catch { return; }
   const phones = new Set();
@@ -211,7 +257,7 @@ async function dispatchWebhook(env, raw, origin) {
     for (const s of v.statuses || []) put(routes[s.recipient_id] || MAIN, { status: s });
   }
   await Promise.all(Object.entries(byHousehold).map(([hid, payload]) =>
-    ledger(env, hid).fetch('https://ledger.internal/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-public-origin': origin, 'x-household': hid }, body: JSON.stringify(payload) })
+    ledger(env, hid).fetch('https://ledger.internal/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-public-origin': origin, 'x-household': hid, ...(unsigned ? { 'x-unsigned': '1' } : {}) }, body: JSON.stringify(payload) })
       .catch(() => {})
   ));
 }
